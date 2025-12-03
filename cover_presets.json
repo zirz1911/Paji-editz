@@ -1,0 +1,12 @@
+{
+    "Test Preset": {
+        "font_size": "100",
+        "text_color": "#FF0000",
+        "border_color": "#000000",
+        "border_width": "5",
+        "text_pos": [
+            0.5,
+            0.5
+        ]
+    }
+}
