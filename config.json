@@ -1,10 +1,10 @@
 {
-    "api_key": "AIzaSyCSDdeS_n1h431IPtCe0gQzsJKEsokiG1k",
+    "api_key": "AIzaSyCdT8il5Zkq-RK12ysd9-Y7OEIjhe7lpVQ",
     "font_name": "Arial",
     "font_size": "20",
     "font_color": "#fef500",
     "subtitle_mode": "word",
-    "margin_v": 65,
+    "margin_v": 64,
     "voice": "Fenrir",
     "audio_mode": "trim",
     "music_path": ""

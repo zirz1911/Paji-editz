@@ -620,14 +620,13 @@ class VideoEditorApp(ctk.CTk):
                 if final_file:
                     self.log(f"[{lang_name}] Completed: {os.path.basename(final_file)}")
                     manifest_data.append({
-                        "id": video_id,
+                        "id": rand_num,
                         "language": lang_name,
                         "title": title,
                         "file_path": final_file
                     })
-                        "title": title,
-                        "file_path": final_file
-                    })
+
+
 
                     # 5. Generate Cover Image (if enabled)
                     if self.cover_settings:
