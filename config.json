@@ -1,11 +1,23 @@
 {
-    "api_key": "AIzaSyCdT8il5Zkq-RK12ysd9-Y7OEIjhe7lpVQ",
-    "font_name": "Arial",
+    "api_key": "AIzaSyC3vj10iTZ3vrH40_vIDPVJ4R3rJ1p4Pkw",
+    "font_name": "Tahoma",
     "font_size": "20",
-    "font_color": "#fef500",
+    "font_color": "#69ffc5",
     "subtitle_mode": "word",
-    "margin_v": 64,
-    "voice": "Fenrir",
+    "margin_v": 46,
+    "voice": "Charon",
+    "speech_speed": "Normal (1.0x)",
+    "voice_prompt": "fast speak",
     "audio_mode": "trim",
-    "music_path": ""
+    "music_path": "",
+    "image_duration": "5",
+    "border_enabled": true,
+    "bg_enabled": true,
+    "bg_color": "#000000",
+    "logo_enabled": false,
+    "logo_path": "/Users/paji/Downloads/Gemini_Generated_Image_265lnj265lnj265l Background Removed.png",
+    "logo_position": {
+        "x": 936,
+        "y": 1772
+    }
 }

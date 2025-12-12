@@ -3,6 +3,7 @@ import wave
 import base64
 import requests
 import json
+import subprocess
 
 # Gemini Voices (Single-speaker)
 GEMINI_VOICES = [
@@ -13,6 +14,15 @@ GEMINI_VOICES = [
     "Alnilam", "Schedar", "Gacrux", "Pulcherrima", "Achird", 
     "Zubenelgenubi", "Vindemiatrix", "Sadachbia", "Sadaltager", "Sulafat"
 ]
+
+# Speech speed options
+SPEECH_SPEEDS = {
+    "Very Slow (0.7x)": 0.7,
+    "Slow (0.85x)": 0.85,
+    "Normal (1.0x)": 1.0,
+    "Fast (1.15x)": 1.15,
+    "Very Fast (1.3x)": 1.3
+}
 
 def verify_api_key(api_key):
     """
@@ -37,11 +47,13 @@ def save_wave_file(filename, pcm_data, channels=1, rate=24000, sample_width=2):
         wf.setframerate(rate)
         wf.writeframes(pcm_data)
 
-def generate_audio(text, language, output_path, voice="Puck", api_key=None):
+def generate_audio(text, language, output_path, voice="Puck", api_key=None, speech_speed=1.0, voice_prompt=""):
     """
     Generates audio using Gemini API Speech Generation (REST API).
+    speech_speed: 0.5 to 2.0 (1.0 = normal speed)
+    voice_prompt: Custom instructions for tone/style (e.g. "speak cheerfully", "speak slowly and calmly")
     """
-    print(f"Generating audio with Gemini API (REST), voice: {voice}")
+    print(f"Generating audio with Gemini API (REST), voice: {voice}, speed: {speech_speed}x")
     
     if not api_key:
         print("Error: API Key is required for Gemini TTS.")
@@ -54,9 +66,16 @@ def generate_audio(text, language, output_path, voice="Puck", api_key=None):
             "Content-Type": "application/json"
         }
         
+        # Combine voice prompt with actual text
+        if voice_prompt and voice_prompt.strip():
+            full_text = f"[{voice_prompt.strip()}] {text}"
+            print(f"Voice prompt: {voice_prompt}")
+        else:
+            full_text = text
+        
         payload = {
             "contents": [{
-                "parts": [{"text": text}]
+                "parts": [{"text": full_text}]
             }],
             "generationConfig": {
                 "responseModalities": ["AUDIO"],
@@ -88,14 +107,33 @@ def generate_audio(text, language, output_path, voice="Puck", api_key=None):
                     data_base64 = parts[0]["inlineData"]["data"]
                     pcm_data = base64.b64decode(data_base64)
                     
-                    # Save as WAV
-                    # If output_path ends in .mp3, we save as .wav first then rename/convert?
-                    # The system expects a file at output_path.
-                    # Since we are writing raw WAV, let's write to output_path but ensure it has a wav header.
-                    # If the filename is .mp3, it will be a WAV file named .mp3. 
-                    # Most players/ffmpeg handle this fine (sniffing format).
+                    # Save as temporary WAV first
+                    if speech_speed != 1.0:
+                        import tempfile
+                        temp_wav = tempfile.NamedTemporaryFile(suffix='.wav', delete=False)
+                        temp_wav.close()
+                        save_wave_file(temp_wav.name, pcm_data)
+                        
+                        # Use FFmpeg to adjust speed with atempo filter
+                        # atempo only supports 0.5 to 2.0
+                        speed = max(0.5, min(2.0, speech_speed))
+                        
+                        cmd = [
+                            'ffmpeg', '-y',
+                            '-i', temp_wav.name,
+                            '-af', f'atempo={speed}',
+                            output_path
+                        ]
+                        subprocess.run(cmd, capture_output=True)
+                        
+                        # Cleanup temp file
+                        try:
+                            os.remove(temp_wav.name)
+                        except:
+                            pass
+                    else:
+                        save_wave_file(output_path, pcm_data)
                     
-                    save_wave_file(output_path, pcm_data)
                     return output_path
         
         print(f"Unexpected response format: {result}")
@@ -104,4 +142,3 @@ def generate_audio(text, language, output_path, voice="Puck", api_key=None):
     except Exception as e:
         print(f"Gemini API Error: {e}")
         return None
-

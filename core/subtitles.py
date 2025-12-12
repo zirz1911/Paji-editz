@@ -28,13 +28,25 @@ def generate_subtitles(audio_path, language=None, mode='sentence', model_size="t
         subtitles = []
         if mode == 'word':
             # Flatten word segments
+            all_words = []
             for segment in segments:
                 for word in segment.words:
-                    subtitles.append({
+                    all_words.append({
                         "start": word.start,
                         "end": word.end,
                         "text": word.word.strip()
                     })
+            
+            # Adjust end times to prevent overlapping subtitles
+            # Each word's end time should not exceed the next word's start time
+            for i in range(len(all_words)):
+                if i < len(all_words) - 1:
+                    # End this word slightly before the next word starts (50ms gap)
+                    next_start = all_words[i + 1]["start"]
+                    gap = 0.05  # 50ms gap between words
+                    if all_words[i]["end"] > next_start - gap:
+                        all_words[i]["end"] = max(all_words[i]["start"] + 0.1, next_start - gap)
+                subtitles.append(all_words[i])
         else:
             # Use full segments
             for segment in segments:

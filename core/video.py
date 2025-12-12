@@ -131,8 +131,35 @@ def burn_subtitles(video_path, subtitle_path, font_settings, output_path, margin
             log(f"Subtitle Content Preview (First 100 chars):\n{content[:100]}...")
 
         # Construct style string
-        # Defaults: Alignment=2 (Bottom Center), BorderStyle=1 (Outline), Outline=1, Shadow=0
-        style_parts = ["Alignment=2", "BorderStyle=1", "Outline=1", "Shadow=0"]
+        # Alignment=2 (Bottom Center)
+        # BorderStyle=1 (Outline) or BorderStyle=4 (Opaque box/background)
+        
+        # Check settings
+        bg_enabled = font_settings.get('BackgroundEnabled', False)
+        border_enabled = font_settings.get('BorderEnabled', True)
+        
+        if bg_enabled:
+            # Use BorderStyle=3 for opaque box (standard ASS box)
+            # Outline defines padding? No, for Style 3, Outline is NOT used for text outline usually.
+            # But let's try to make it look cleaner.
+            style_parts = ["Alignment=2", "BorderStyle=3", "Outline=2", "Shadow=0"]
+            
+            # Add background color (uses OutlineColour for the box in BorderStyle=4)
+            if 'BackgroundColour' in font_settings:
+                c = font_settings['BackgroundColour'].replace('#', '')
+                if len(c) == 6:
+                    # ASS format: &HAABBGGRR (AA = alpha, 00 = fully opaque, 80 = semi-transparent)
+                    ass_bg_color = f"&H80{c[4:6]}{c[2:4]}{c[0:2]}"  # 80 = semi-transparent
+                    style_parts.append(f"OutlineColour={ass_bg_color}")
+                    style_parts.append(f"BackColour={ass_bg_color}")
+        elif border_enabled:
+            # Border/Outline style
+            style_parts = ["Alignment=2", "BorderStyle=1", "Outline=2", "Shadow=1"]
+            # Add black outline for contrast
+            style_parts.append("OutlineColour=&H00000000")
+        else:
+            # No border, no background - just text
+            style_parts = ["Alignment=2", "BorderStyle=1", "Outline=0", "Shadow=0"]
         
         if 'Fontname' in font_settings and font_settings['Fontname']:
             style_parts.append(f"Fontname={font_settings['Fontname']}")
@@ -144,9 +171,6 @@ def burn_subtitles(video_path, subtitle_path, font_settings, output_path, margin
             if len(c) == 6:
                 ass_color = f"&H00{c[4:6]}{c[2:4]}{c[0:2]}"
                 style_parts.append(f"PrimaryColour={ass_color}")
-        
-        # Add black outline for contrast
-        style_parts.append("OutlineColour=&H00000000")
         
         if margin_v is not None:
             style_parts.append(f"MarginV={margin_v}")
@@ -219,4 +243,270 @@ def burn_subtitle_image(image_path, subtitle_path, font_settings, output_path, m
         return output_path
     except ffmpeg.Error as e:
         log(f"FFmpeg error: {e.stderr.decode('utf8')}")
+        return None
+
+
+def get_audio_duration(audio_path):
+    """
+    Get the duration of an audio file in seconds using ffprobe.
+    """
+    try:
+        probe = ffmpeg.probe(audio_path)
+        duration = float(probe['format']['duration'])
+        return duration
+    except Exception as e:
+        print(f"Error getting audio duration: {e}")
+        return None
+
+
+def create_slideshow_video(image_folder, audio_duration, output_path, transition_duration=0.5, fps=30, image_duration=3.0):
+    """
+    Create a slideshow video from images AND videos in a folder with fade transitions.
+    
+    Args:
+        image_folder: Path to folder containing images and/or videos
+        audio_duration: Target duration in seconds (from TTS audio)
+        output_path: Output video path
+        transition_duration: Duration of fade transition between items (default 0.5s)
+        fps: Frames per second for output video
+        image_duration: Duration each image is displayed in seconds (default 3.0s)
+    
+    Returns:
+        output_path on success, None on failure
+    """
+    import subprocess
+    import glob
+    import tempfile
+    
+    # 9:16 aspect ratio (portrait/vertical video for TikTok, Reels, etc.)
+    WIDTH = 1080
+    HEIGHT = 1920
+    
+    try:
+        # Find all media files in folder (images and videos)
+        image_extensions = ['*.jpg', '*.jpeg', '*.png', '*.webp', '*.JPG', '*.JPEG', '*.PNG', '*.WEBP']
+        video_extensions = ['*.mp4', '*.MP4', '*.mov', '*.MOV', '*.avi', '*.AVI', '*.mkv', '*.MKV']
+        
+        media_files = []
+        
+        # Collect images
+        for ext in image_extensions:
+            for f in glob.glob(os.path.join(image_folder, ext)):
+                media_files.append({'path': f, 'type': 'image'})
+        
+        # Collect videos
+        for ext in video_extensions:
+            for f in glob.glob(os.path.join(image_folder, ext)):
+                media_files.append({'path': f, 'type': 'video'})
+        
+        # Sort alphabetically by filename
+        media_files = sorted(media_files, key=lambda x: x['path'])
+        
+        if not media_files:
+            print(f"No images or videos found in {image_folder}")
+            return None
+        
+        num_images = sum(1 for m in media_files if m['type'] == 'image')
+        num_videos = sum(1 for m in media_files if m['type'] == 'video')
+        print(f"Found {num_images} images and {num_videos} videos in {image_folder}")
+        
+        # Calculate total media duration and prepare clips
+        # For images: use image_duration
+        # For videos: use their actual duration (trimmed if necessary)
+        
+        display_time = max(image_duration, transition_duration + 0.1)
+        
+        # Calculate slots needed to fill audio duration
+        effective_duration_per_slot = display_time - transition_duration
+        slots_needed = int((audio_duration - transition_duration) / effective_duration_per_slot) + 1
+        slots_needed = max(slots_needed, 1)
+        
+        # Create media list (loop if needed)
+        media_list = []
+        while len(media_list) < slots_needed:
+            media_list.extend(media_files)
+        media_list = media_list[:slots_needed]
+        
+        N = len(media_list)
+        
+        # Adjust display_time for exact audio duration fit
+        if N > 1:
+            display_time = (audio_duration + (N - 1) * transition_duration) / N
+        else:
+            display_time = audio_duration
+        
+        print(f"Using {N} media slots, {display_time:.2f}s each, transition: {transition_duration}s, resolution: {WIDTH}x{HEIGHT} (9:16)")
+        
+        # Create temporary directory for intermediate files
+        temp_dir = tempfile.mkdtemp()
+        temp_clips = []
+        
+        try:
+            # Pre-process each media item to a standardized clip
+            for i, media in enumerate(media_list):
+                temp_clip_path = os.path.join(temp_dir, f"clip_{i:04d}.mp4")
+                
+                if media['type'] == 'image':
+                    # Convert image to video clip
+                    cmd = [
+                        'ffmpeg', '-y',
+                        '-loop', '1',
+                        '-t', str(display_time),
+                        '-framerate', str(fps),
+                        '-i', media['path'],
+                        '-vf', f'scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=decrease,pad={WIDTH}:{HEIGHT}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p',
+                        '-c:v', 'libx264',
+                        '-pix_fmt', 'yuv420p',
+                        '-r', str(fps),
+                        '-an',
+                        temp_clip_path
+                    ]
+                else:
+                    # Process video: scale, trim to display_time
+                    cmd = [
+                        'ffmpeg', '-y',
+                        '-i', media['path'],
+                        '-t', str(display_time),
+                        '-vf', f'scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=decrease,pad={WIDTH}:{HEIGHT}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p,fps={fps}',
+                        '-c:v', 'libx264',
+                        '-pix_fmt', 'yuv420p',
+                        '-r', str(fps),
+                        '-an',
+                        temp_clip_path
+                    ]
+                
+                result = subprocess.run(cmd, capture_output=True, text=True)
+                if result.returncode != 0:
+                    print(f"Error processing media {i}: {result.stderr}")
+                    continue
+                
+                temp_clips.append(temp_clip_path)
+            
+            if not temp_clips:
+                print("No clips were successfully processed")
+                return None
+            
+            N = len(temp_clips)
+            
+            if N == 1:
+                # Just copy the single clip
+                import shutil
+                shutil.copy(temp_clips[0], output_path)
+            else:
+                # Combine clips with xfade transitions
+                input_args = []
+                for clip in temp_clips:
+                    input_args.extend(['-i', clip])
+                
+                # Build filter complex for xfade
+                filter_parts = []
+                offset = display_time - transition_duration
+                prev_label = '0:v'
+                
+                for i in range(1, N):
+                    next_label = f'vout{i}' if i < N - 1 else 'vfinal'
+                    filter_parts.append(f'[{prev_label}][{i}:v]xfade=transition=fade:duration={transition_duration}:offset={offset:.3f}[{next_label}]')
+                    prev_label = next_label
+                    offset += display_time - transition_duration
+                
+                filter_complex = ';'.join(filter_parts)
+                
+                cmd = [
+                    'ffmpeg', '-y',
+                    *input_args,
+                    '-filter_complex', filter_complex,
+                    '-map', '[vfinal]',
+                    '-c:v', 'libx264',
+                    '-pix_fmt', 'yuv420p',
+                    '-r', str(fps),
+                    output_path
+                ]
+                
+                result = subprocess.run(cmd, capture_output=True, text=True)
+                if result.returncode != 0:
+                    print(f"FFmpeg error: {result.stderr}")
+                    return None
+            
+            return output_path
+            
+        finally:
+            # Cleanup temp files
+            import shutil
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        
+    except subprocess.CalledProcessError as e:
+        print(f"FFmpeg error creating slideshow: {e.stderr}")
+        return None
+    except Exception as e:
+        print(f"Error creating slideshow: {e}")
+        return None
+
+
+def overlay_logo(video_path, logo_path, output_path, position=None, logo_scale=0.15, logger=None):
+    """
+    Overlay a logo image onto a video at specified position.
+    
+    Args:
+        video_path: Path to input video
+        logo_path: Path to logo image (PNG with transparency recommended)
+        output_path: Path for output video
+        position: Dict with 'x' and 'y' keys for logo position (default top-left)
+        logo_scale: Scale factor for logo relative to video width (default 0.15 = 15%)
+        logger: Logger function
+    
+    Returns:
+        output_path on success, None on failure
+    """
+    def log(msg):
+        if logger:
+            logger(msg)
+        print(msg)
+    
+    if position is None:
+        position = {"x": 50, "y": 50}
+    
+    try:
+        # Get video dimensions
+        probe = ffmpeg.probe(video_path)
+        video_stream = next((stream for stream in probe['streams'] if stream['codec_type'] == 'video'), None)
+        if video_stream:
+            video_width = int(video_stream['width'])
+            video_height = int(video_stream['height'])
+        else:
+            video_width = 1080
+            video_height = 1920
+        
+        # Calculate logo size (as percentage of video width)
+        logo_width = int(video_width * logo_scale)
+        
+        x = position.get("x", 50)
+        y = position.get("y", 50)
+        
+        log(f"Overlaying logo at position ({x}, {y}) with scale {logo_scale}")
+        
+        # Build ffmpeg command
+        input_video = ffmpeg.input(video_path)
+        input_logo = ffmpeg.input(logo_path)
+        
+        # Scale logo and overlay
+        logo_scaled = input_logo.filter('scale', logo_width, -1)
+        
+        # Overlay logo on video
+        output = ffmpeg.overlay(input_video, logo_scaled, x=x, y=y)
+        
+        # Output with audio
+        (
+            ffmpeg
+            .output(output, input_video.audio, output_path, vcodec='libx264', acodec='copy')
+            .overwrite_output()
+            .run(capture_stdout=True, capture_stderr=True)
+        )
+        
+        return output_path
+        
+    except ffmpeg.Error as e:
+        log(f"FFmpeg error overlaying logo: {e.stderr.decode('utf8')}")
+        return None
+    except Exception as e:
+        log(f"Error overlaying logo: {e}")
         return None
