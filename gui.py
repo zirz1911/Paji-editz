@@ -1622,7 +1622,7 @@ class NewsAnchorGeneratorWindow(ctk.CTkToplevel):
     """Window for generating AI News Anchor videos using Veo 3.0 Fast with auto-extend support."""
     
     # Approximate characters per video segment (~10 seconds of speech)
-    CHARS_PER_SEGMENT = 150  # Reduced for longer video per segment
+    CHARS_PER_SEGMENT = 180  # Characters per segment
     
     # Veo pricing (approximate)
     VEO_COST_PER_VIDEO = 0.35  # USD per 8-second video
