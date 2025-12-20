@@ -1,0 +1,44 @@
+{
+    "Truth News": {
+        "font_name": "Tahoma",
+        "font_size": "25",
+        "font_color": "#ffec00",
+        "subtitle_mode": "word",
+        "margin_v": 226,
+        "voice": "Puck",
+        "speech_speed": "Normal (1.0x)",
+        "voice_prompt": "Normal speak",
+        "audio_mode": "trim",
+        "image_duration": "5",
+        "border_enabled": true,
+        "bg_enabled": true,
+        "bg_color": "#000000",
+        "logo_enabled": false,
+        "logo_position": {
+            "x": 837,
+            "y": 1650
+        },
+        "logo_scale": 0.3
+    },
+    "Liteon News": {
+        "font_name": "Tahoma",
+        "font_size": "25",
+        "font_color": "#ffec00",
+        "subtitle_mode": "word",
+        "margin_v": 49,
+        "voice": "Charon",
+        "speech_speed": "Normal (1.0x)",
+        "voice_prompt": "Normal speak",
+        "audio_mode": "trim",
+        "image_duration": "5",
+        "border_enabled": true,
+        "bg_enabled": true,
+        "bg_color": "#000000",
+        "logo_enabled": true,
+        "logo_position": {
+            "x": 837,
+            "y": 1650
+        },
+        "logo_scale": 0.3
+    }
+}

@@ -8,11 +8,13 @@ import subprocess
 from PIL import Image, ImageTk
 from core.tts import generate_audio, verify_api_key, GEMINI_VOICES, SPEECH_SPEEDS
 from core.subtitles import generate_subtitles, save_srt
-from core.video import merge_audio_video, burn_subtitles, extract_frame, burn_subtitle_image, get_audio_duration, create_slideshow_video, overlay_logo
-from core.utils import generate_id, create_manifest, load_config, save_config, load_cover_presets, save_cover_presets
+from core.video import merge_audio_video, burn_subtitles, extract_frame, burn_subtitle_image, get_audio_duration, create_slideshow_video, overlay_logo, create_images_to_videos, concatenate_videos, insert_overlay_with_fade, burn_subtitles_for_news
+from core.utils import generate_id, create_manifest, load_config, save_config, load_cover_presets, save_cover_presets, load_settings_presets, save_settings_preset, delete_settings_preset
+from core.veo_generator import generate_news_anchor_video, verify_veo_access, ASPECT_RATIOS, extend_video
 from core.translation import translate_text
 from core.image_gen import draw_text_on_image
 import random
+import time
 
 def get_system_fonts():
     """Get list of available system fonts using fc-list"""
@@ -69,6 +71,7 @@ class VideoEditorApp(ctk.CTk):
         # Logo settings
         self.logo_path = self.settings.get("logo_path", None)
         self.logo_position = self.settings.get("logo_position", {"x": 50, "y": 50})  # Default top-left
+        self.logo_scale = self.settings.get("logo_scale", 0.15)  # Default 15% of video width
 
         self.create_sidebar()
         self.create_main_area()
@@ -81,6 +84,29 @@ class VideoEditorApp(ctk.CTk):
         self.destroy()
 
     def save_current_settings(self):
+        # Get logo position from entries
+        try:
+            logo_x = int(self.logo_x_entry.get())
+        except:
+            logo_x = self.logo_position.get("x", 50)
+        try:
+            logo_y = int(self.logo_y_entry.get())
+        except:
+            logo_y = self.logo_position.get("y", 50)
+        self.logo_position = {"x": logo_x, "y": logo_y}
+        
+        # Get logo scale from entry (percentage to decimal)
+        try:
+            self.logo_scale = int(self.logo_scale_entry.get()) / 100.0
+        except:
+            pass
+        
+        # Get subtitle margin from entry
+        try:
+            self.subtitle_margin_v = int(self.sub_margin_entry.get())
+        except:
+            pass
+        
         data = {
             "api_key": self.api_key_entry.get().strip(),
             "font_name": self.font_name_entry.get(),
@@ -99,7 +125,8 @@ class VideoEditorApp(ctk.CTk):
             "bg_color": self.selected_bg_color,
             "logo_enabled": self.logo_enabled_var.get(),
             "logo_path": self.logo_path,
-            "logo_position": self.logo_position
+            "logo_position": self.logo_position,
+            "logo_scale": self.logo_scale
         }
         save_config(data)
 
@@ -111,21 +138,48 @@ class VideoEditorApp(ctk.CTk):
         self.app_title_label = ctk.CTkLabel(self.sidebar_frame, text="Paji Editor", font=ctk.CTkFont(size=24, weight="bold"))
         self.app_title_label.grid(row=0, column=0, padx=20, pady=(20, 10))
 
+        # Settings Preset Section
+        self.preset_label = ctk.CTkLabel(self.sidebar_frame, text="Settings Preset", font=ctk.CTkFont(weight="bold"))
+        self.preset_label.grid(row=1, column=0, padx=20, pady=(10, 5))
+        
+        self.preset_frame = ctk.CTkFrame(self.sidebar_frame, fg_color="transparent")
+        self.preset_frame.grid(row=2, column=0, padx=20, pady=5, sticky="ew")
+        
+        # Load presets
+        self.settings_presets = load_settings_presets()
+        preset_names = list(self.settings_presets.keys())
+        
+        self.preset_var = ctk.StringVar(value="Select Preset")
+        self.preset_dropdown = ctk.CTkOptionMenu(
+            self.preset_frame, 
+            variable=self.preset_var, 
+            values=["Select Preset"] + preset_names,
+            command=self.load_preset,
+            width=180
+        )
+        self.preset_dropdown.pack(side="left", padx=(0, 5))
+        
+        self.save_preset_btn = ctk.CTkButton(self.preset_frame, text="💾", width=35, command=self.save_preset_dialog)
+        self.save_preset_btn.pack(side="left", padx=2)
+        
+        self.delete_preset_btn = ctk.CTkButton(self.preset_frame, text="🗑️", width=35, fg_color="red", hover_color="darkred", command=self.delete_current_preset)
+        self.delete_preset_btn.pack(side="left", padx=2)
+
         # Source Mode Selection
         self.source_mode_label = ctk.CTkLabel(self.sidebar_frame, text="Source Mode", font=ctk.CTkFont(weight="bold"))
-        self.source_mode_label.grid(row=1, column=0, padx=20, pady=(10, 5))
+        self.source_mode_label.grid(row=3, column=0, padx=20, pady=(10, 5))
 
         self.source_mode_var = ctk.StringVar(value="video")
         
         self.video_mode_radio = ctk.CTkRadioButton(self.sidebar_frame, text="Video File", variable=self.source_mode_var, value="video", command=self.toggle_source_mode)
-        self.video_mode_radio.grid(row=2, column=0, padx=20, pady=2, sticky="w")
+        self.video_mode_radio.grid(row=4, column=0, padx=20, pady=2, sticky="w")
         
         self.image_mode_radio = ctk.CTkRadioButton(self.sidebar_frame, text="Media Folder (Slideshow)", variable=self.source_mode_var, value="image_folder", command=self.toggle_source_mode)
-        self.image_mode_radio.grid(row=3, column=0, padx=20, pady=2, sticky="w")
+        self.image_mode_radio.grid(row=5, column=0, padx=20, pady=2, sticky="w")
 
         # Video Selection Frame
         self.video_source_frame = ctk.CTkFrame(self.sidebar_frame, fg_color="transparent")
-        self.video_source_frame.grid(row=4, column=0, padx=20, pady=5, sticky="ew")
+        self.video_source_frame.grid(row=6, column=0, padx=20, pady=5, sticky="ew")
         
         self.select_video_btn = ctk.CTkButton(self.video_source_frame, text="Select Source Video", command=self.select_video)
         self.select_video_btn.pack(pady=2)
@@ -135,7 +189,7 @@ class VideoEditorApp(ctk.CTk):
 
         # Image/Video Folder Selection Frame
         self.image_source_frame = ctk.CTkFrame(self.sidebar_frame, fg_color="transparent")
-        self.image_source_frame.grid(row=4, column=0, padx=20, pady=5, sticky="ew")
+        self.image_source_frame.grid(row=6, column=0, padx=20, pady=5, sticky="ew")
         
         self.select_folder_btn = ctk.CTkButton(self.image_source_frame, text="Select Media Folder", command=self.select_image_folder)
         self.select_folder_btn.pack(pady=2)
@@ -156,49 +210,49 @@ class VideoEditorApp(ctk.CTk):
 
         # TTS Settings
         self.tts_label = ctk.CTkLabel(self.sidebar_frame, text="Gemini TTS Settings", font=ctk.CTkFont(weight="bold"))
-        self.tts_label.grid(row=5, column=0, padx=20, pady=(10, 5))
+        self.tts_label.grid(row=7, column=0, padx=20, pady=(10, 5))
 
         # API Key Input
         self.api_key_entry = ctk.CTkEntry(self.sidebar_frame, placeholder_text="Gemini API Key", show="*")
-        self.api_key_entry.grid(row=6, column=0, padx=20, pady=5)
+        self.api_key_entry.grid(row=8, column=0, padx=20, pady=5)
         if "api_key" in self.settings:
             self.api_key_entry.insert(0, self.settings["api_key"])
 
         # Voice Selection
         self.voice_var = ctk.StringVar(value=self.settings.get("voice", GEMINI_VOICES[0]))
         self.voice_dropdown = ctk.CTkOptionMenu(self.sidebar_frame, variable=self.voice_var, values=GEMINI_VOICES)
-        self.voice_dropdown.grid(row=7, column=0, padx=20, pady=5)
+        self.voice_dropdown.grid(row=9, column=0, padx=20, pady=5)
         
         # Speech Speed Selection
         self.speech_speed_var = ctk.StringVar(value=self.settings.get("speech_speed", "Normal (1.0x)"))
         self.speech_speed_dropdown = ctk.CTkOptionMenu(self.sidebar_frame, variable=self.speech_speed_var, values=list(SPEECH_SPEEDS.keys()))
-        self.speech_speed_dropdown.grid(row=8, column=0, padx=20, pady=5)
+        self.speech_speed_dropdown.grid(row=10, column=0, padx=20, pady=5)
         
         # Voice Prompt (Tone/Style)
         self.voice_prompt_entry = ctk.CTkEntry(self.sidebar_frame, placeholder_text="Voice prompt (e.g. cheerful, calm)")
-        self.voice_prompt_entry.grid(row=9, column=0, padx=20, pady=5)
+        self.voice_prompt_entry.grid(row=11, column=0, padx=20, pady=5)
         if "voice_prompt" in self.settings:
             self.voice_prompt_entry.insert(0, self.settings["voice_prompt"])
 
         # Check API Button
         self.check_api_btn = ctk.CTkButton(self.sidebar_frame, text="Check API Status", command=self.check_api, width=100, fg_color="gray")
-        self.check_api_btn.grid(row=10, column=0, padx=20, pady=5)
+        self.check_api_btn.grid(row=12, column=0, padx=20, pady=5)
 
         # Audio/Video Mode
         self.audio_mode_label = ctk.CTkLabel(self.sidebar_frame, text="Audio/Video Mode", font=ctk.CTkFont(weight="bold"))
-        self.audio_mode_label.grid(row=11, column=0, padx=20, pady=(10, 5))
+        self.audio_mode_label.grid(row=13, column=0, padx=20, pady=(10, 5))
 
         self.audio_mode_var = ctk.StringVar(value=self.settings.get("audio_mode", "trim"))
 
         self.trim_radio = ctk.CTkRadioButton(self.sidebar_frame, text="Trim Video to Audio", variable=self.audio_mode_var, value="trim", command=self.toggle_music_options)
-        self.trim_radio.grid(row=12, column=0, padx=20, pady=2, sticky="w")
+        self.trim_radio.grid(row=14, column=0, padx=20, pady=2, sticky="w")
 
         self.music_radio = ctk.CTkRadioButton(self.sidebar_frame, text="Add Background Music", variable=self.audio_mode_var, value="bg_music", command=self.toggle_music_options)
-        self.music_radio.grid(row=13, column=0, padx=20, pady=2, sticky="w")
+        self.music_radio.grid(row=15, column=0, padx=20, pady=2, sticky="w")
 
         # Music Selection
         self.music_frame = ctk.CTkFrame(self.sidebar_frame, fg_color="transparent")
-        self.music_frame.grid(row=14, column=0, padx=20, pady=5)
+        self.music_frame.grid(row=16, column=0, padx=20, pady=5)
 
         self.select_music_btn = ctk.CTkButton(self.music_frame, text="Select Music File", command=self.select_music, width=150)
         self.select_music_btn.pack(pady=2)
@@ -214,79 +268,128 @@ class VideoEditorApp(ctk.CTk):
 
         # Subtitle Settings
         self.settings_label = ctk.CTkLabel(self.sidebar_frame, text="Subtitle Settings", font=ctk.CTkFont(weight="bold"))
-        self.settings_label.grid(row=15, column=0, padx=20, pady=(10, 5))
+        self.settings_label.grid(row=17, column=0, padx=20, pady=(10, 5))
 
         # Font Selection Dropdown
         self.system_fonts = get_system_fonts()
         saved_font = self.settings.get("font_name", "Arial")
         self.font_name_var = ctk.StringVar(value=saved_font if saved_font in self.system_fonts else "Arial")
         self.font_name_entry = ctk.CTkComboBox(self.sidebar_frame, values=self.system_fonts, variable=self.font_name_var, width=180)
-        self.font_name_entry.grid(row=16, column=0, padx=20, pady=5)
+        self.font_name_entry.grid(row=18, column=0, padx=20, pady=5)
 
         self.font_size_entry = ctk.CTkEntry(self.sidebar_frame, placeholder_text="Font Size")
         self.font_size_entry.insert(0, self.settings.get("font_size", "75"))
-        self.font_size_entry.grid(row=17, column=0, padx=20, pady=5)
+        self.font_size_entry.grid(row=19, column=0, padx=20, pady=5)
 
         self.color_btn = ctk.CTkButton(self.sidebar_frame, text="Text Color", command=self.pick_color)
-        self.color_btn.grid(row=18, column=0, padx=20, pady=5)
+        self.color_btn.grid(row=20, column=0, padx=20, pady=5)
         self.selected_color = self.settings.get("font_color", "#FFFFFF")
         self.color_btn.configure(fg_color=self.selected_color, text_color="black" if self.selected_color.lower() > "#aaaaaa" else "white")
         
         # Text Border Option
         self.border_enabled_var = ctk.BooleanVar(value=self.settings.get("border_enabled", True))
         self.border_checkbox = ctk.CTkCheckBox(self.sidebar_frame, text="Text Border (Outline)", variable=self.border_enabled_var)
-        self.border_checkbox.grid(row=19, column=0, padx=20, pady=5, sticky="w")
+        self.border_checkbox.grid(row=21, column=0, padx=20, pady=5, sticky="w")
         
         # Text Background Option
         self.bg_enabled_var = ctk.BooleanVar(value=self.settings.get("bg_enabled", False))
         self.bg_checkbox = ctk.CTkCheckBox(self.sidebar_frame, text="Text Background", variable=self.bg_enabled_var, command=self.toggle_bg_color)
-        self.bg_checkbox.grid(row=20, column=0, padx=20, pady=5, sticky="w")
+        self.bg_checkbox.grid(row=22, column=0, padx=20, pady=5, sticky="w")
         
         self.bg_color_btn = ctk.CTkButton(self.sidebar_frame, text="BG Color", command=self.pick_bg_color, width=100)
-        self.bg_color_btn.grid(row=21, column=0, padx=20, pady=2)
+        self.bg_color_btn.grid(row=23, column=0, padx=20, pady=2)
         self.selected_bg_color = self.settings.get("bg_color", "#000000")
         self.bg_color_btn.configure(fg_color=self.selected_bg_color, text_color="white" if self.selected_bg_color.lower() < "#888888" else "black")
         self.toggle_bg_color()  # Show/hide based on checkbox
         
         self.sub_mode_var = ctk.StringVar(value=self.settings.get("subtitle_mode", "sentence"))
         self.sub_mode_switch = ctk.CTkSwitch(self.sidebar_frame, text="Word Level Subtitles", variable=self.sub_mode_var, onvalue="word", offvalue="sentence")
-        self.sub_mode_switch.grid(row=22, column=0, padx=20, pady=10)
+        self.sub_mode_switch.grid(row=24, column=0, padx=20, pady=10)
 
-        self.pos_btn = ctk.CTkButton(self.sidebar_frame, text="Adjust Position", command=self.open_position_editor, fg_color="gray")
-        self.pos_btn.grid(row=23, column=0, padx=20, pady=5)
-
-        # Logo Settings
-        self.logo_label = ctk.CTkLabel(self.sidebar_frame, text="Logo Settings", font=ctk.CTkFont(weight="bold"))
-        self.logo_label.grid(row=24, column=0, padx=20, pady=(10, 5))
+        # Logo & Position Settings (Combined)
+        self.logo_pos_label = ctk.CTkLabel(self.sidebar_frame, text="Logo & Position Settings", font=ctk.CTkFont(weight="bold"))
+        self.logo_pos_label.grid(row=25, column=0, padx=20, pady=(10, 5))
         
+        # Logo Enable
         self.logo_enabled_var = ctk.BooleanVar(value=self.settings.get("logo_enabled", False))
         self.logo_checkbox = ctk.CTkCheckBox(self.sidebar_frame, text="Enable Logo", variable=self.logo_enabled_var, command=self.toggle_logo_options)
-        self.logo_checkbox.grid(row=25, column=0, padx=20, pady=5, sticky="w")
+        self.logo_checkbox.grid(row=26, column=0, padx=20, pady=5, sticky="w")
         
-        self.logo_frame = ctk.CTkFrame(self.sidebar_frame, fg_color="transparent")
-        self.logo_frame.grid(row=26, column=0, padx=20, pady=5, sticky="ew")
+        # Logo Options Frame (collapsible)
+        self.logo_options_frame = ctk.CTkFrame(self.sidebar_frame, fg_color="transparent")
+        self.logo_options_frame.grid(row=27, column=0, padx=20, pady=5, sticky="ew")
         
-        self.select_logo_btn = ctk.CTkButton(self.logo_frame, text="Select", command=self.select_logo, width=70)
-        self.select_logo_btn.pack(side="left", padx=2)
+        # Select Logo Button
+        self.select_logo_btn = ctk.CTkButton(self.logo_options_frame, text="Select Logo", command=self.select_logo, width=100)
+        self.select_logo_btn.grid(row=0, column=0, columnspan=2, pady=5)
         
-        self.logo_pos_btn = ctk.CTkButton(self.logo_frame, text="Position", command=self.open_logo_position_editor, fg_color="gray", width=70)
+        self.logo_file_label = ctk.CTkLabel(self.logo_options_frame, text="No logo selected" if not self.logo_path else os.path.basename(self.logo_path), wraplength=280, font=ctk.CTkFont(size=10))
+        self.logo_file_label.grid(row=1, column=0, columnspan=2, pady=2)
+        
+        # Logo Position X
+        self.logo_x_label = ctk.CTkLabel(self.logo_options_frame, text="Logo X:", font=ctk.CTkFont(size=11))
+        self.logo_x_label.grid(row=2, column=0, pady=2, sticky="e")
+        self.logo_x_entry = ctk.CTkEntry(self.logo_options_frame, width=80, placeholder_text="50")
+        self.logo_x_entry.insert(0, str(self.logo_position.get("x", 50)))
+        self.logo_x_entry.grid(row=2, column=1, pady=2, padx=5, sticky="w")
+        
+        # Logo Position Y
+        self.logo_y_label = ctk.CTkLabel(self.logo_options_frame, text="Logo Y:", font=ctk.CTkFont(size=11))
+        self.logo_y_label.grid(row=3, column=0, pady=2, sticky="e")
+        self.logo_y_entry = ctk.CTkEntry(self.logo_options_frame, width=80, placeholder_text="50")
+        self.logo_y_entry.insert(0, str(self.logo_position.get("y", 50)))
+        self.logo_y_entry.grid(row=3, column=1, pady=2, padx=5, sticky="w")
+        
+        # Logo Scale (Size)
+        self.logo_scale_label = ctk.CTkLabel(self.logo_options_frame, text="Logo Size (%):", font=ctk.CTkFont(size=11))
+        self.logo_scale_label.grid(row=4, column=0, pady=2, sticky="e")
+        self.logo_scale_entry = ctk.CTkEntry(self.logo_options_frame, width=80, placeholder_text="15")
+        self.logo_scale_entry.insert(0, str(int(self.logo_scale * 100)))  # Show as percentage
+        self.logo_scale_entry.grid(row=4, column=1, pady=2, padx=5, sticky="w")
+        
+        # Button Row for Logo
+        self.logo_btn_frame = ctk.CTkFrame(self.logo_options_frame, fg_color="transparent")
+        self.logo_btn_frame.grid(row=5, column=0, columnspan=2, pady=5)
+        
+        self.logo_pos_btn = ctk.CTkButton(self.logo_btn_frame, text="Visual Editor", command=self.open_logo_position_editor, fg_color="gray", width=90)
         self.logo_pos_btn.pack(side="left", padx=2)
         
-        self.logo_preview_btn = ctk.CTkButton(self.logo_frame, text="Preview", command=self.preview_logo_position, fg_color="orange", width=70)
+        self.logo_preview_btn = ctk.CTkButton(self.logo_btn_frame, text="Preview", command=self.preview_logo_position, fg_color="orange", width=90)
         self.logo_preview_btn.pack(side="left", padx=2)
         
-        self.logo_file_label = ctk.CTkLabel(self.sidebar_frame, text="No logo selected" if not self.logo_path else os.path.basename(self.logo_path), wraplength=280, font=ctk.CTkFont(size=10))
-        self.logo_file_label.grid(row=27, column=0, padx=20, pady=2)
+        # Subtitle Position Section
+        self.subtitle_pos_label = ctk.CTkLabel(self.sidebar_frame, text="Subtitle Position", font=ctk.CTkFont(size=12))
+        self.subtitle_pos_label.grid(row=28, column=0, padx=20, pady=(10, 5), sticky="w")
+        
+        self.sub_pos_frame = ctk.CTkFrame(self.sidebar_frame, fg_color="transparent")
+        self.sub_pos_frame.grid(row=29, column=0, padx=20, pady=2, sticky="ew")
+        
+        self.sub_margin_label = ctk.CTkLabel(self.sub_pos_frame, text="Margin V:", font=ctk.CTkFont(size=11))
+        self.sub_margin_label.grid(row=0, column=0, pady=2, sticky="e")
+        self.sub_margin_entry = ctk.CTkEntry(self.sub_pos_frame, width=80, placeholder_text="20")
+        self.sub_margin_entry.insert(0, str(self.subtitle_margin_v))
+        self.sub_margin_entry.grid(row=0, column=1, pady=2, padx=5, sticky="w")
+        
+        self.pos_btn = ctk.CTkButton(self.sub_pos_frame, text="Visual Editor", command=self.open_position_editor, fg_color="gray", width=100)
+        self.pos_btn.grid(row=0, column=2, padx=5, pady=2)
         
         self.toggle_logo_options()  # Show/hide based on checkbox
 
         # Process Button
         self.process_btn = ctk.CTkButton(self.sidebar_frame, text="Generate & Export", command=self.start_processing, fg_color="green", hover_color="darkgreen")
-        self.process_btn.grid(row=28, column=0, padx=20, pady=20)
+        self.process_btn.grid(row=30, column=0, padx=20, pady=20)
 
         # Cover Generator Button
         self.cover_btn = ctk.CTkButton(self.sidebar_frame, text="Cover Generator", command=self.open_cover_generator, fg_color="purple", hover_color="#4a0072")
-        self.cover_btn.grid(row=29, column=0, padx=20, pady=10)
+        self.cover_btn.grid(row=31, column=0, padx=20, pady=10)
+
+        # Images to Videos Button
+        self.img_to_vid_btn = ctk.CTkButton(self.sidebar_frame, text="Images to Videos", command=self.start_images_to_videos, fg_color="orange", hover_color="#cc6600")
+        self.img_to_vid_btn.grid(row=32, column=0, padx=20, pady=10)
+
+        # News Anchor Generator Button
+        self.news_anchor_btn = ctk.CTkButton(self.sidebar_frame, text="📺 News Anchor Generator", command=self.open_news_anchor_generator, fg_color="#2196F3", hover_color="#1976D2")
+        self.news_anchor_btn.grid(row=33, column=0, padx=20, pady=10)
 
     def create_main_area(self):
         self.main_frame = ctk.CTkFrame(self, corner_radius=0)
@@ -334,6 +437,162 @@ class VideoEditorApp(ctk.CTk):
         self.log_textbox.insert("end", message + "\n")
         self.log_textbox.see("end")
         self.log_textbox.configure(state="disabled")
+
+    # ============== Preset Methods ==============
+    
+    def get_current_settings_for_preset(self):
+        """Get current settings as a dictionary for saving as preset."""
+        # Get logo position from entries
+        try:
+            logo_x = int(self.logo_x_entry.get())
+        except:
+            logo_x = self.logo_position.get("x", 50)
+        try:
+            logo_y = int(self.logo_y_entry.get())
+        except:
+            logo_y = self.logo_position.get("y", 50)
+        
+        # Get logo scale from entry
+        try:
+            logo_scale = int(self.logo_scale_entry.get()) / 100.0
+        except:
+            logo_scale = self.logo_scale
+        
+        # Get subtitle margin
+        try:
+            margin_v = int(self.sub_margin_entry.get())
+        except:
+            margin_v = self.subtitle_margin_v
+        
+        return {
+            "font_name": self.font_name_entry.get(),
+            "font_size": self.font_size_entry.get(),
+            "font_color": self.selected_color,
+            "subtitle_mode": self.sub_mode_var.get(),
+            "margin_v": margin_v,
+            "voice": self.voice_var.get(),
+            "speech_speed": self.speech_speed_var.get(),
+            "voice_prompt": self.voice_prompt_entry.get(),
+            "audio_mode": self.audio_mode_var.get(),
+            "image_duration": self.image_duration_entry.get(),
+            "border_enabled": self.border_enabled_var.get(),
+            "bg_enabled": self.bg_enabled_var.get(),
+            "bg_color": self.selected_bg_color,
+            "logo_enabled": self.logo_enabled_var.get(),
+            "logo_position": {"x": logo_x, "y": logo_y},
+            "logo_scale": logo_scale
+        }
+    
+    def apply_settings_from_preset(self, preset_data):
+        """Apply settings from a preset."""
+        # Voice settings
+        if "voice" in preset_data:
+            self.voice_var.set(preset_data["voice"])
+        if "speech_speed" in preset_data:
+            self.speech_speed_var.set(preset_data["speech_speed"])
+        if "voice_prompt" in preset_data:
+            self.voice_prompt_entry.delete(0, "end")
+            self.voice_prompt_entry.insert(0, preset_data["voice_prompt"])
+        
+        # Audio mode
+        if "audio_mode" in preset_data:
+            self.audio_mode_var.set(preset_data["audio_mode"])
+            self.toggle_music_options()
+        
+        # Image duration
+        if "image_duration" in preset_data:
+            self.image_duration_entry.delete(0, "end")
+            self.image_duration_entry.insert(0, preset_data["image_duration"])
+        
+        # Font settings
+        if "font_name" in preset_data:
+            self.font_name_var.set(preset_data["font_name"])
+        if "font_size" in preset_data:
+            self.font_size_entry.delete(0, "end")
+            self.font_size_entry.insert(0, preset_data["font_size"])
+        if "font_color" in preset_data:
+            self.selected_color = preset_data["font_color"]
+            self.color_btn.configure(fg_color=self.selected_color)
+        
+        # Border and background
+        if "border_enabled" in preset_data:
+            self.border_enabled_var.set(preset_data["border_enabled"])
+        if "bg_enabled" in preset_data:
+            self.bg_enabled_var.set(preset_data["bg_enabled"])
+            self.toggle_bg_color()
+        if "bg_color" in preset_data:
+            self.selected_bg_color = preset_data["bg_color"]
+            self.bg_color_btn.configure(fg_color=self.selected_bg_color)
+        
+        # Subtitle mode and margin
+        if "subtitle_mode" in preset_data:
+            self.sub_mode_var.set(preset_data["subtitle_mode"])
+        if "margin_v" in preset_data:
+            self.subtitle_margin_v = preset_data["margin_v"]
+            self.sub_margin_entry.delete(0, "end")
+            self.sub_margin_entry.insert(0, str(preset_data["margin_v"]))
+        
+        # Logo settings
+        if "logo_enabled" in preset_data:
+            self.logo_enabled_var.set(preset_data["logo_enabled"])
+            self.toggle_logo_options()
+        if "logo_position" in preset_data:
+            self.logo_position = preset_data["logo_position"]
+            self.logo_x_entry.delete(0, "end")
+            self.logo_x_entry.insert(0, str(preset_data["logo_position"].get("x", 50)))
+            self.logo_y_entry.delete(0, "end")
+            self.logo_y_entry.insert(0, str(preset_data["logo_position"].get("y", 50)))
+        if "logo_scale" in preset_data:
+            self.logo_scale = preset_data["logo_scale"]
+            self.logo_scale_entry.delete(0, "end")
+            self.logo_scale_entry.insert(0, str(int(preset_data["logo_scale"] * 100)))
+    
+    def load_preset(self, preset_name):
+        """Load a preset by name."""
+        if preset_name == "Select Preset":
+            return
+        
+        self.settings_presets = load_settings_presets()
+        if preset_name in self.settings_presets:
+            preset_data = self.settings_presets[preset_name]
+            self.apply_settings_from_preset(preset_data)
+            self.log(f"Loaded preset: {preset_name}")
+    
+    def save_preset_dialog(self):
+        """Open dialog to save current settings as a preset."""
+        dialog = ctk.CTkInputDialog(text="Enter preset name:", title="Save Preset")
+        preset_name = dialog.get_input()
+        
+        if preset_name and preset_name.strip():
+            preset_name = preset_name.strip()
+            settings = self.get_current_settings_for_preset()
+            save_settings_preset(preset_name, settings)
+            
+            # Refresh dropdown
+            self.refresh_preset_dropdown()
+            self.preset_var.set(preset_name)
+            messagebox.showinfo("Success", f"Preset '{preset_name}' saved!")
+    
+    def delete_current_preset(self):
+        """Delete the currently selected preset."""
+        preset_name = self.preset_var.get()
+        if preset_name == "Select Preset":
+            messagebox.showwarning("Warning", "Please select a preset to delete.")
+            return
+        
+        confirm = messagebox.askyesno("Confirm Delete", f"Are you sure you want to delete preset '{preset_name}'?")
+        if confirm:
+            delete_settings_preset(preset_name)
+            self.refresh_preset_dropdown()
+            self.preset_var.set("Select Preset")
+            messagebox.showinfo("Deleted", f"Preset '{preset_name}' deleted.")
+    
+    def refresh_preset_dropdown(self):
+        """Refresh the preset dropdown with current presets."""
+        self.settings_presets = load_settings_presets()
+        preset_names = list(self.settings_presets.keys())
+        self.preset_dropdown.configure(values=["Select Preset"] + preset_names)
+
 
     def select_video(self):
         path = filedialog.askopenfilename(filetypes=[("Video Files", "*.mp4 *.mkv *.mov *.avi")])
@@ -393,30 +652,51 @@ class VideoEditorApp(ctk.CTk):
             self.music_label.configure(text=os.path.basename(path))
 
     def open_position_editor(self):
-        if not self.source_video_path:
-            messagebox.showerror("Error", "Please select a source video first.")
+        # Get source for background frame
+        source_path = None
+        frame_path = "temp_frame.jpg"
+        
+        if self.source_mode_var.get() == "video" and self.source_video_path:
+            source_path = self.source_video_path
+            # Extract frame from video
+            if not extract_frame(self.source_video_path, frame_path):
+                messagebox.showerror("Error", "Failed to extract frame from video.")
+                return
+        elif self.source_mode_var.get() == "image_folder" and self.image_folder_path:
+            import glob
+            for ext in ['*.jpg', '*.jpeg', '*.png', '*.webp', '*.JPG', '*.JPEG', '*.PNG', '*.WEBP']:
+                files = glob.glob(os.path.join(self.image_folder_path, ext))
+                if files:
+                    source_path = sorted(files)[0]
+                    # Copy image to temp frame
+                    import shutil
+                    shutil.copy(source_path, frame_path)
+                    break
+        
+        if not source_path:
+            messagebox.showerror("Error", "Please select a source video or image folder first.")
             return
             
         editor = ctk.CTkToplevel(self)
         editor.title("Subtitle Position Editor")
-        editor.geometry("800x600")
-        
-        # Extract frame
-        frame_path = "temp_frame.jpg"
-        if not extract_frame(self.source_video_path, frame_path):
-            messagebox.showerror("Error", "Failed to extract frame from video.")
-            editor.destroy()
-            return
+        editor.geometry("450x900")
             
         # Load image
         pil_image = Image.open(frame_path)
-        # Resize to fit window roughly
+        # Get original dimensions
         img_width, img_height = pil_image.size
-        # Scale down if too big
-        max_w, max_h = 780, 500
-        scale = min(max_w/img_width, max_h/img_height)
-        new_w, new_h = int(img_width * scale), int(img_height * scale)
-        pil_image_resized = pil_image.resize((new_w, new_h))
+        
+        # Scale to 1080x1920 first (video resolution), then resize for preview
+        pil_image = pil_image.resize((1080, 1920), Image.Resampling.LANCZOS)
+        img_width, img_height = 1080, 1920
+        
+        # Preview dimensions (9:16 aspect ratio)
+        preview_width = 360
+        preview_height = 640
+        scale = preview_width / img_width  # Same as preview_height / img_height
+        new_w, new_h = preview_width, preview_height
+        
+        pil_image_resized = pil_image.resize((new_w, new_h), Image.Resampling.LANCZOS)
         tk_image = ImageTk.PhotoImage(pil_image_resized)
         
         canvas = tk.Canvas(editor, width=new_w, height=new_h, bg="black")
@@ -427,7 +707,12 @@ class VideoEditorApp(ctk.CTk):
         # Initial position based on current margin
         # Margin is from bottom. In canvas y coordinates: height - margin
         # We need to scale the margin too? Yes.
-        scaled_margin = self.subtitle_margin_v * scale
+        # Read margin from entry field
+        try:
+            current_margin = int(self.sub_margin_entry.get())
+        except:
+            current_margin = self.subtitle_margin_v
+        scaled_margin = current_margin * scale
         initial_y = new_h - scaled_margin
         
         # Scale Font Size for Preview
@@ -449,7 +734,7 @@ class VideoEditorApp(ctk.CTk):
         line_item = canvas.create_line(0, initial_y, new_w, initial_y, fill="red", dash=(4, 4))
         
         # Margin Label
-        margin_label = canvas.create_text(10, initial_y - 10, text=f"Margin: {self.subtitle_margin_v}px", fill="red", anchor="w", font=("Arial", 10))
+        margin_label = canvas.create_text(10, initial_y - 10, text=f"Margin: {current_margin}px", fill="red", anchor="w", font=("Arial", 10))
         
         def on_drag(event):
             # Update Y position
@@ -477,6 +762,9 @@ class VideoEditorApp(ctk.CTk):
             # Scale back to original video size
             original_margin = int(margin_px / scale)
             self.subtitle_margin_v = max(0, original_margin)
+            # Update entry field
+            self.sub_margin_entry.delete(0, 'end')
+            self.sub_margin_entry.insert(0, str(self.subtitle_margin_v))
             print(f"Saved margin: {self.subtitle_margin_v}")
             editor.destroy()
             
@@ -578,11 +866,9 @@ class VideoEditorApp(ctk.CTk):
     def toggle_logo_options(self):
         """Show/hide logo options based on checkbox state."""
         if self.logo_enabled_var.get():
-            self.logo_frame.grid()
-            self.logo_file_label.grid()
+            self.logo_options_frame.grid()
         else:
-            self.logo_frame.grid_remove()
-            self.logo_file_label.grid_remove()
+            self.logo_options_frame.grid_remove()
 
     def select_logo(self):
         """Select logo image file."""
@@ -592,14 +878,30 @@ class VideoEditorApp(ctk.CTk):
             self.logo_file_label.configure(text=os.path.basename(path))
 
     def open_logo_position_editor(self):
-        """Open logo position editor with drag to move, shift for fine movement."""
+        """Open logo position editor with actual video frame and correctly scaled logo."""
         if not self.logo_path or not os.path.exists(self.logo_path):
             messagebox.showerror("Error", "Please select a logo image first.")
             return
         
+        # Get source for background frame
+        source_path = None
+        if self.source_mode_var.get() == "video" and self.source_video_path:
+            source_path = self.source_video_path
+        elif self.source_mode_var.get() == "image_folder" and self.image_folder_path:
+            import glob
+            for ext in ['*.jpg', '*.jpeg', '*.png', '*.webp', '*.JPG', '*.JPEG', '*.PNG', '*.WEBP']:
+                files = glob.glob(os.path.join(self.image_folder_path, ext))
+                if files:
+                    source_path = sorted(files)[0]
+                    break
+        
+        if not source_path:
+            messagebox.showerror("Error", "Please select a source video or image folder first.")
+            return
+        
         editor = ctk.CTkToplevel(self)
         editor.title("Logo Position Editor")
-        editor.geometry("600x800")
+        editor.geometry("450x900")
         editor.transient(self)
         editor.grab_set()
         
@@ -607,44 +909,96 @@ class VideoEditorApp(ctk.CTk):
         instr_label = ctk.CTkLabel(editor, text="Drag logo to move • Hold Shift for fine movement", font=ctk.CTkFont(size=12))
         instr_label.pack(pady=5)
         
-        # Canvas for preview (9:16 aspect ratio preview)
-        preview_width = 270
-        preview_height = 480
-        
-        canvas_frame = ctk.CTkFrame(editor)
-        canvas_frame.pack(pady=10)
-        
-        canvas = tk.Canvas(canvas_frame, width=preview_width, height=preview_height, bg="black")
-        canvas.pack()
-        
-        # Load and display logo
         try:
             from PIL import Image, ImageTk
-            logo_img = Image.open(self.logo_path)
+            import subprocess
+            import tempfile
             
-            # Scale logo to fit preview (max 100px)
-            logo_w, logo_h = logo_img.size
-            max_logo_size = 80
-            scale = min(max_logo_size / logo_w, max_logo_size / logo_h, 1.0)
-            new_w = int(logo_w * scale)
-            new_h = int(logo_h * scale)
-            logo_img = logo_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+            # Extract frame from video or load image
+            is_video = source_path.lower().endswith(('.mp4', '.mov', '.avi', '.mkv'))
             
-            editor.logo_tk = ImageTk.PhotoImage(logo_img)
-            editor.logo_size = (new_w, new_h)
+            if is_video:
+                temp_frame = tempfile.NamedTemporaryFile(suffix='.jpg', delete=False)
+                temp_frame.close()
+                cmd = ['ffmpeg', '-y', '-ss', '1', '-i', source_path, '-vframes', '1', 
+                       '-vf', 'scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2',
+                       temp_frame.name]
+                subprocess.run(cmd, capture_output=True)
+                bg_img = Image.open(temp_frame.name)
+                editor.temp_frame = temp_frame.name  # Store for cleanup
+            else:
+                bg_img = Image.open(source_path)
+                # Scale to 1080x1920
+                bg_img = bg_img.resize((1080, 1920), Image.Resampling.LANCZOS)
+                editor.temp_frame = None
             
-            # Initial position (scaled from actual position)
-            # Actual video is 1080x1920, preview is 270x480
-            scale_x = preview_width / 1080
-            scale_y = preview_height / 1920
+            # Actual video dimensions (reference)
+            actual_width = 1080
+            actual_height = 1920
             
-            init_x = int(self.logo_position.get("x", 50) * scale_x)
-            init_y = int(self.logo_position.get("y", 50) * scale_y)
+            # Preview dimensions (scaled down for display)
+            preview_width = 360
+            preview_height = 640
+            
+            # Scale factors
+            scale_x = preview_width / actual_width
+            scale_y = preview_height / actual_height
+            
+            # Create background for preview
+            bg_preview = bg_img.resize((preview_width, preview_height), Image.Resampling.LANCZOS)
+            editor.bg_tk = ImageTk.PhotoImage(bg_preview)
+            
+            # Load and scale logo according to logo_scale_entry
+            logo_original = Image.open(self.logo_path)
+            
+            # Get logo scale from entry (percentage of video width)
+            try:
+                logo_scale_percent = int(self.logo_scale_entry.get())
+            except:
+                logo_scale_percent = 15
+            
+            # Calculate actual logo width in video
+            actual_logo_width = int(actual_width * logo_scale_percent / 100)
+            # Maintain aspect ratio
+            logo_orig_w, logo_orig_h = logo_original.size
+            actual_logo_height = int(actual_logo_width * logo_orig_h / logo_orig_w)
+            
+            # Scale logo for preview
+            preview_logo_width = int(actual_logo_width * scale_x)
+            preview_logo_height = int(actual_logo_height * scale_y)
+            preview_logo_width = max(1, preview_logo_width)
+            preview_logo_height = max(1, preview_logo_height)
+            
+            logo_preview = logo_original.resize((preview_logo_width, preview_logo_height), Image.Resampling.LANCZOS)
+            editor.logo_tk = ImageTk.PhotoImage(logo_preview)
+            
+            # Create canvas
+            canvas_frame = ctk.CTkFrame(editor)
+            canvas_frame.pack(pady=10)
+            
+            canvas = tk.Canvas(canvas_frame, width=preview_width, height=preview_height, bg="black")
+            canvas.pack()
+            
+            # Draw background
+            canvas.create_image(0, 0, image=editor.bg_tk, anchor="nw")
+            
+            # Read initial position from entry fields
+            try:
+                init_x_actual = int(self.logo_x_entry.get())
+            except:
+                init_x_actual = self.logo_position.get("x", 50)
+            try:
+                init_y_actual = int(self.logo_y_entry.get())
+            except:
+                init_y_actual = self.logo_position.get("y", 50)
+            
+            init_x = int(init_x_actual * scale_x)
+            init_y = int(init_y_actual * scale_y)
             
             logo_item = canvas.create_image(init_x, init_y, image=editor.logo_tk, anchor="nw")
             
             # Position label
-            pos_label = ctk.CTkLabel(editor, text=f"Position: X={self.logo_position.get('x', 50)}, Y={self.logo_position.get('y', 50)}")
+            pos_label = ctk.CTkLabel(editor, text=f"Position: X={init_x_actual}, Y={init_y_actual} | Size: {logo_scale_percent}%")
             pos_label.pack(pady=5)
             
             # Drag state
@@ -680,7 +1034,7 @@ class VideoEditorApp(ctk.CTk):
                 coords = canvas.coords(logo_item)
                 actual_x = int(coords[0] / scale_x)
                 actual_y = int(coords[1] / scale_y)
-                pos_label.configure(text=f"Position: X={actual_x}, Y={actual_y}")
+                pos_label.configure(text=f"Position: X={actual_x}, Y={actual_y} | Size: {logo_scale_percent}%")
             
             canvas.tag_bind(logo_item, "<Button-1>", on_drag_start)
             canvas.tag_bind(logo_item, "<B1-Motion>", on_drag_motion)
@@ -691,10 +1045,22 @@ class VideoEditorApp(ctk.CTk):
             
             def save_position():
                 coords = canvas.coords(logo_item)
-                self.logo_position = {
-                    "x": int(coords[0] / scale_x),
-                    "y": int(coords[1] / scale_y)
-                }
+                new_x = int(coords[0] / scale_x)
+                new_y = int(coords[1] / scale_y)
+                self.logo_position = {"x": new_x, "y": new_y}
+                # Update entry fields
+                self.logo_x_entry.delete(0, 'end')
+                self.logo_x_entry.insert(0, str(new_x))
+                self.logo_y_entry.delete(0, 'end')
+                self.logo_y_entry.insert(0, str(new_y))
+                cleanup_and_close()
+            
+            def cleanup_and_close():
+                if editor.temp_frame and os.path.exists(editor.temp_frame):
+                    try:
+                        os.remove(editor.temp_frame)
+                    except:
+                        pass
                 editor.destroy()
             
             btn_frame = ctk.CTkFrame(editor, fg_color="transparent")
@@ -703,11 +1069,13 @@ class VideoEditorApp(ctk.CTk):
             save_btn = ctk.CTkButton(btn_frame, text="Save Position", command=save_position, fg_color="green")
             save_btn.pack(side="left", padx=5)
             
-            cancel_btn = ctk.CTkButton(btn_frame, text="Cancel", command=editor.destroy)
+            cancel_btn = ctk.CTkButton(btn_frame, text="Cancel", command=cleanup_and_close)
             cancel_btn.pack(side="left", padx=5)
             
+            editor.protocol("WM_DELETE_WINDOW", cleanup_and_close)
+            
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to load logo: {e}")
+            messagebox.showerror("Error", f"Failed to load: {e}")
             editor.destroy()
 
     def preview_logo_position(self):
@@ -741,8 +1109,22 @@ class VideoEditorApp(ctk.CTk):
             temp_preview = tempfile.NamedTemporaryFile(suffix='.png', delete=False)
             temp_preview.close()
             
-            x = self.logo_position.get("x", 50)
-            y = self.logo_position.get("y", 50)
+            # Read position from entry fields
+            try:
+                x = int(self.logo_x_entry.get())
+            except:
+                x = self.logo_position.get("x", 50)
+            try:
+                y = int(self.logo_y_entry.get())
+            except:
+                y = self.logo_position.get("y", 50)
+            
+            # Read scale from entry field (percentage to actual width)
+            try:
+                scale_percent = int(self.logo_scale_entry.get())
+                logo_width = int(1080 * scale_percent / 100)  # 1080 is video width
+            except:
+                logo_width = 162  # Default ~15% of 1080
             
             # Determine if source is video or image
             is_video = source_path.lower().endswith(('.mp4', '.mov', '.avi', '.mkv'))
@@ -754,7 +1136,7 @@ class VideoEditorApp(ctk.CTk):
                     '-ss', '1',  # Seek to 1 second
                     '-i', source_path,
                     '-i', self.logo_path,
-                    '-filter_complex', f'[0:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2[bg];[1:v]scale=162:-1[logo];[bg][logo]overlay={x}:{y}',
+                    '-filter_complex', f'[0:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2[bg];[1:v]scale={logo_width}:-1[logo];[bg][logo]overlay={x}:{y}',
                     '-frames:v', '1',
                     temp_preview.name
                 ]
@@ -764,7 +1146,7 @@ class VideoEditorApp(ctk.CTk):
                     'ffmpeg', '-y',
                     '-i', source_path,
                     '-i', self.logo_path,
-                    '-filter_complex', f'[0:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2[bg];[1:v]scale=162:-1[logo];[bg][logo]overlay={x}:{y}',
+                    '-filter_complex', f'[0:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2[bg];[1:v]scale={logo_width}:-1[logo];[bg][logo]overlay={x}:{y}',
                     '-frames:v', '1',
                     temp_preview.name
                 ]
@@ -777,7 +1159,11 @@ class VideoEditorApp(ctk.CTk):
             
             # Show preview in popup
             preview_window = ctk.CTkToplevel(self)
-            preview_window.title(f"Logo Preview - Position: ({x}, {y})")
+            try:
+                scale_val = int(self.logo_scale_entry.get())
+            except:
+                scale_val = 15
+            preview_window.title(f"Logo Preview - Position: ({x}, {y}) Size: {scale_val}%")
             preview_window.geometry("400x750")
             preview_window.transient(self)
             
@@ -792,7 +1178,7 @@ class VideoEditorApp(ctk.CTk):
             img_label = tk.Label(preview_window, image=preview_tk)
             img_label.pack(pady=10)
             
-            pos_label = ctk.CTkLabel(preview_window, text=f"Logo Position: X={x}, Y={y}")
+            pos_label = ctk.CTkLabel(preview_window, text=f"Logo Position: X={x}, Y={y}, Size={scale_val}%")
             pos_label.pack(pady=5)
             
             close_btn = ctk.CTkButton(preview_window, text="Close", command=preview_window.destroy)
@@ -913,17 +1299,17 @@ class VideoEditorApp(ctk.CTk):
             title = data["title_entry"].get().strip()
             if not title:
                 title = f"Video_{lang_name}"
-                
-            if script:
-                tasks.append({
-                    "name": lang_name,
-                    "code": data["code"],
-                    "script": script,
-                    "title": title
-                })
+            
+            # Now allow tasks without script (will skip audio generation)
+            tasks.append({
+                "name": lang_name,
+                "code": data["code"],
+                "script": script,  # Can be empty
+                "title": title
+            })
         
         if not tasks:
-            messagebox.showerror("Error", "Please enter script and title for at least one language.")
+            messagebox.showerror("Error", "Please add at least one language tab.")
             self.process_btn.configure(state="normal", text="Generate & Export")
             return
 
@@ -963,22 +1349,36 @@ class VideoEditorApp(ctk.CTk):
                 srt_path = os.path.join(lang_dir, f"{base_name}.srt")
                 final_video_path = os.path.join(lang_dir, f"{base_name}.mp4") # Removed _final for cleaner name
                 
-                # 1. Generate Audio
-                self.log(f"[{lang_name}] Generating audio...")
-                speech_speed = SPEECH_SPEEDS.get(self.speech_speed_var.get(), 1.0)
-                voice_prompt = self.voice_prompt_entry.get().strip()
-                audio_file = generate_audio(
-                    script, 
-                    lang_code, 
-                    audio_path, 
-                    voice=self.voice_var.get(),
-                    api_key=api_key,
-                    speech_speed=speech_speed,
-                    voice_prompt=voice_prompt
-                )
-                if not audio_file:
-                    self.log(f"[{lang_name}] Failed to generate audio")
-                    continue
+                # Check if script is provided
+                has_script = script and script.strip()
+                audio_file = None
+                audio_duration = None
+                
+                if has_script:
+                    # 1. Generate Audio
+                    self.log(f"[{lang_name}] Generating audio...")
+                    speech_speed = SPEECH_SPEEDS.get(self.speech_speed_var.get(), 1.0)
+                    voice_prompt = self.voice_prompt_entry.get().strip()
+                    audio_file = generate_audio(
+                        script, 
+                        lang_code, 
+                        audio_path, 
+                        voice=self.voice_var.get(),
+                        api_key=api_key,
+                        speech_speed=speech_speed,
+                        voice_prompt=voice_prompt
+                    )
+                    if not audio_file:
+                        self.log(f"[{lang_name}] Failed to generate audio")
+                        continue
+                    audio_duration = get_audio_duration(audio_path)
+                else:
+                    self.log(f"[{lang_name}] No script provided, skipping audio generation...")
+                    # Get default duration from image duration setting
+                    try:
+                        audio_duration = float(self.image_duration_entry.get())
+                    except:
+                        audio_duration = 5.0
                 
                 # 2. Create/Merge Video based on source mode
                 source_mode = self.source_mode_var.get()
@@ -986,9 +1386,8 @@ class VideoEditorApp(ctk.CTk):
                 if source_mode == "image_folder":
                     # Create slideshow from images
                     self.log(f"[{lang_name}] Creating slideshow from images...")
-                    audio_duration = get_audio_duration(audio_path)
                     if not audio_duration:
-                        self.log(f"[{lang_name}] Failed to get audio duration")
+                        self.log(f"[{lang_name}] Failed to get duration")
                         continue
                     
                     slideshow_path = os.path.join(lang_dir, f"{base_name}_slideshow.mp4")
@@ -1009,36 +1408,58 @@ class VideoEditorApp(ctk.CTk):
                         self.log(f"[{lang_name}] Failed to create slideshow")
                         continue
                     
-                    # Merge slideshow with audio
-                    self.log(f"[{lang_name}] Merging slideshow with audio...")
-                    merged_file = merge_audio_video(
-                        slideshow_path, 
-                        audio_path, 
-                        video_merged_path,
-                        mode="trim",  # Always trim for slideshow since it's already exact length
-                        music_path=self.music_path if self.audio_mode_var.get() == "bg_music" else None
-                    )
-                    
-                    # Cleanup slideshow temp file
-                    if os.path.exists(slideshow_path):
-                        os.remove(slideshow_path)
+                    if has_script and audio_file:
+                        # Merge slideshow with audio
+                        self.log(f"[{lang_name}] Merging slideshow with audio...")
+                        merged_file = merge_audio_video(
+                            slideshow_path, 
+                            audio_path, 
+                            video_merged_path,
+                            mode="trim",  # Always trim for slideshow since it's already exact length
+                            music_path=self.music_path if self.audio_mode_var.get() == "bg_music" else None
+                        )
+                        # Cleanup slideshow temp file
+                        if os.path.exists(slideshow_path):
+                            os.remove(slideshow_path)
+                    else:
+                        # No audio - just use slideshow as merged file
+                        merged_file = slideshow_path
+                        video_merged_path = slideshow_path
                 else:
                     # Original video mode
-                    self.log(f"[{lang_name}] Merging video...")
-                    merged_file = merge_audio_video(
-                        self.source_video_path, 
-                        audio_path, 
-                        video_merged_path,
-                        mode=self.audio_mode_var.get(),
-                        music_path=self.music_path
-                    )
+                    if has_script and audio_file:
+                        self.log(f"[{lang_name}] Merging video with audio...")
+                        merged_file = merge_audio_video(
+                            self.source_video_path, 
+                            audio_path, 
+                            video_merged_path,
+                            mode=self.audio_mode_var.get(),
+                            music_path=self.music_path
+                        )
+                    else:
+                        # No audio - just copy video
+                        self.log(f"[{lang_name}] Processing video (no audio)...")
+                        import subprocess
+                        cmd = [
+                            'ffmpeg', '-y',
+                            '-i', self.source_video_path,
+                            '-t', str(audio_duration),
+                            '-c:v', 'copy',
+                            '-an',  # No audio
+                            video_merged_path
+                        ]
+                        result = subprocess.run(cmd, capture_output=True, text=True)
+                        merged_file = video_merged_path if result.returncode == 0 else None
                 
                 if not merged_file:
-                    self.log(f"[{lang_name}] Failed to merge video")
+                    self.log(f"[{lang_name}] Failed to process video")
                     continue
 
-                # 3. Generate Subtitles (skip for Thai language)
-                if lang_code == 'th':
+                # 3. Generate Subtitles (skip for Thai language or no audio)
+                if not has_script or not audio_file:
+                    self.log(f"[{lang_name}] Skipping subtitles (no script/audio)...")
+                    subtitled_file = merged_file
+                elif lang_code == 'th':
                     self.log(f"[{lang_name}] Skipping subtitles for Thai language...")
                     subtitled_file = merged_file  # Use merged file directly without subtitles
                 else:
@@ -1075,7 +1496,7 @@ class VideoEditorApp(ctk.CTk):
                         self.logo_path,
                         final_video_path,
                         position=self.logo_position,
-                        logo_scale=0.15,
+                        logo_scale=self.logo_scale,
                         logger=self.log
                     )
                     # Cleanup subtitled file
@@ -1139,6 +1560,713 @@ class VideoEditorApp(ctk.CTk):
             return
             
         CoverGeneratorWindow(self)
+
+    def start_images_to_videos(self):
+        """Open dialog to convert individual images to separate videos."""
+        # Select input folder
+        input_folder = filedialog.askdirectory(title="Select Image Folder")
+        if not input_folder:
+            return
+        
+        # Select output folder
+        output_folder = filedialog.askdirectory(title="Select Output Folder for Videos")
+        if not output_folder:
+            return
+        
+        # Get duration from settings
+        try:
+            duration = float(self.image_duration_entry.get())
+        except:
+            duration = 5.0
+        
+        self.img_to_vid_btn.configure(state="disabled", text="Processing...")
+        
+        # Start processing in thread
+        def process():
+            try:
+                self.log("Starting Images to Videos conversion...")
+                created = create_images_to_videos(
+                    input_folder, 
+                    output_folder, 
+                    duration=duration,
+                    logger=self.log
+                )
+                
+                if created:
+                    self.log(f"Completed! Created {len(created)} videos")
+                    self.after(0, lambda: messagebox.showinfo("Success", f"Created {len(created)} videos!"))
+                else:
+                    self.log("No videos were created")
+                    self.after(0, lambda: messagebox.showwarning("Warning", "No images found or processed."))
+            except Exception as e:
+                self.log(f"Error: {e}")
+                self.after(0, lambda: messagebox.showerror("Error", f"An error occurred: {e}"))
+            finally:
+                self.after(0, lambda: self.img_to_vid_btn.configure(state="normal", text="Images to Videos"))
+        
+        thread = threading.Thread(target=process)
+        thread.start()
+
+    def open_news_anchor_generator(self):
+        """Open the News Anchor Generator dialog."""
+        api_key = self.api_key_entry.get().strip()
+        if not api_key:
+            messagebox.showerror("Error", "Please enter an API Key first.")
+            return
+        
+        NewsAnchorGeneratorWindow(self, api_key)
+
+
+class NewsAnchorGeneratorWindow(ctk.CTkToplevel):
+    """Window for generating AI News Anchor videos using Veo 3.0 Fast with auto-extend support."""
+    
+    # Approximate characters per video segment (~10 seconds of speech)
+    CHARS_PER_SEGMENT = 150  # Reduced for longer video per segment
+    
+    # Veo pricing (approximate)
+    VEO_COST_PER_VIDEO = 0.35  # USD per 8-second video
+    
+    def __init__(self, parent, api_key):
+        super().__init__(parent)
+        self.parent = parent
+        self.api_key = api_key
+        self.title("📺 AI News Anchor Generator")
+        self.geometry("1050x950")
+        self.minsize(1000, 900)
+        
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=1)
+        
+        self.is_generating = False
+        self.generated_videos = []
+        self.last_video_uri = None
+        self.last_output_folder = None
+        self.last_aspect_ratio = None
+        self.script_segments = []
+        self.current_segment_index = 0
+        self.overlay_media_list = []  # List of overlay images/videos
+        self.total_cost = 0.0
+        
+        self.create_ui()
+    
+    def split_script(self, script):
+        """Split script into segments for video generation."""
+        script = script.strip()
+        if not script:
+            return []
+        
+        # Split by sentences (periods, question marks, exclamation marks)
+        import re
+        sentences = re.split(r'(?<=[.!?])\s+', script)
+        
+        segments = []
+        current_segment = ""
+        
+        for sentence in sentences:
+            if len(current_segment) + len(sentence) <= self.CHARS_PER_SEGMENT:
+                current_segment += sentence + " "
+            else:
+                if current_segment.strip():
+                    segments.append(current_segment.strip())
+                current_segment = sentence + " "
+        
+        # Add remaining
+        if current_segment.strip():
+            segments.append(current_segment.strip())
+        
+        # If no segments, put whole script as one
+        if not segments:
+            segments = [script]
+        
+        return segments
+    
+    def update_segment_info(self, event=None):
+        """Update the segment count display when script changes."""
+        script = self.script_textbox.get("1.0", "end-1c").strip()
+        if script:
+            segments = self.split_script(script)
+            estimated_cost = len(segments) * self.VEO_COST_PER_VIDEO
+            self.segment_count_label.configure(
+                text=f"📊 แบ่งเป็น {len(segments)} ส่วน (~{len(segments) * 8} วินาที) | 💰 ประมาณ ${estimated_cost:.2f} USD"
+            )
+            self.script_segments = segments
+        else:
+            self.segment_count_label.configure(text="📊 กรุณากรอก Script")
+            self.script_segments = []
+    
+    def create_ui(self):
+        # Header
+        header_frame = ctk.CTkFrame(self, fg_color="transparent")
+        header_frame.grid(row=0, column=0, columnspan=2, pady=(10, 5), sticky="ew")
+        
+        header = ctk.CTkLabel(header_frame, text="📺 AI News Anchor Generator", font=ctk.CTkFont(size=20, weight="bold"))
+        header.pack()
+        
+        subtitle = ctk.CTkLabel(header_frame, text="Create AI News Anchor Videos with Veo 3.0 Fast + Auto-Extend", font=ctk.CTkFont(size=10))
+        subtitle.pack()
+        
+        # Main container
+        self.grid_columnconfigure(0, weight=0, minsize=320)  # Left - Settings (fixed width)
+        self.grid_columnconfigure(1, weight=1)  # Right - Script + Log (expandable)
+        self.grid_rowconfigure(1, weight=1)
+        
+        # ===================== LEFT COLUMN - Settings (Scrollable) =====================
+        left_container = ctk.CTkFrame(self, width=320)
+        left_container.grid(row=1, column=0, padx=(10, 5), pady=5, sticky="nsew")
+        left_container.grid_propagate(False)
+        
+        # Scrollable frame for settings
+        left_scroll = ctk.CTkScrollableFrame(left_container, width=300)
+        left_scroll.pack(fill="both", expand=True, padx=5, pady=5)
+        
+        ctk.CTkLabel(left_scroll, text="⚙️ Settings", font=ctk.CTkFont(size=14, weight="bold")).pack(pady=(5, 10))
+        
+        # Language (Default: English)
+        lang_frame = ctk.CTkFrame(left_scroll, fg_color="transparent")
+        lang_frame.pack(fill="x", pady=3)
+        ctk.CTkLabel(lang_frame, text="Language:", width=90).pack(side="left")
+        self.language_var = ctk.StringVar(value="English")
+        self.language_dropdown = ctk.CTkOptionMenu(lang_frame, variable=self.language_var, values=list(SUPPORTED_LANGUAGES.keys()), width=140)
+        self.language_dropdown.pack(side="left", padx=5)
+        
+        # Aspect Ratio (Default: 9:16)
+        aspect_frame = ctk.CTkFrame(left_scroll, fg_color="transparent")
+        aspect_frame.pack(fill="x", pady=3)
+        ctk.CTkLabel(aspect_frame, text="Aspect Ratio:", width=90).pack(side="left")
+        self.aspect_ratio_var = ctk.StringVar(value="9:16")
+        ctk.CTkRadioButton(aspect_frame, text="16:9", variable=self.aspect_ratio_var, value="16:9").pack(side="left", padx=3)
+        ctk.CTkRadioButton(aspect_frame, text="9:16", variable=self.aspect_ratio_var, value="9:16").pack(side="left", padx=3)
+        
+        # Reference Image
+        ref_frame = ctk.CTkFrame(left_scroll, fg_color="transparent")
+        ref_frame.pack(fill="x", pady=3)
+        ctk.CTkLabel(ref_frame, text="Ref. Image:", width=90).pack(side="left")
+        self.reference_image_path = None
+        self.ref_image_label = ctk.CTkLabel(ref_frame, text="Not selected", font=ctk.CTkFont(size=9), width=100)
+        self.ref_image_label.pack(side="left")
+        ctk.CTkButton(ref_frame, text="📷", command=self.select_reference_image, width=30).pack(side="left", padx=2)
+        ctk.CTkButton(ref_frame, text="❌", command=self.clear_reference_image, width=30, fg_color="gray").pack(side="left")
+        
+        # Output Folder
+        output_frame = ctk.CTkFrame(left_scroll, fg_color="transparent")
+        output_frame.pack(fill="x", pady=3)
+        ctk.CTkLabel(output_frame, text="Output:", width=90).pack(side="left")
+        self.output_path_var = ctk.StringVar(value="")
+        ctk.CTkEntry(output_frame, textvariable=self.output_path_var, width=140).pack(side="left", padx=3)
+        ctk.CTkButton(output_frame, text="📁", command=self.browse_output, width=30).pack(side="left")
+        
+        # Extension Mode
+        extend_box = ctk.CTkFrame(left_scroll)
+        extend_box.pack(fill="x", pady=8)
+        ctk.CTkLabel(extend_box, text="🔄 Extension Mode", font=ctk.CTkFont(size=12, weight="bold")).pack(pady=3)
+        self.auto_extend_var = ctk.BooleanVar(value=True)
+        ctk.CTkRadioButton(extend_box, text="Auto-Extend (split script)", variable=self.auto_extend_var, value=True).pack(anchor="w", padx=10)
+        ctk.CTkRadioButton(extend_box, text="Manual (extend manually)", variable=self.auto_extend_var, value=False).pack(anchor="w", padx=10)
+        
+        # Subtitle Options (Default: Word mode)
+        sub_box = ctk.CTkFrame(left_scroll)
+        sub_box.pack(fill="x", pady=8)
+        ctk.CTkLabel(sub_box, text="📝 Subtitles", font=ctk.CTkFont(size=12, weight="bold")).pack(pady=3)
+        self.subtitle_enabled_var = ctk.BooleanVar(value=True)  # Default: enabled
+        ctk.CTkCheckBox(sub_box, text="Generate Subtitles", variable=self.subtitle_enabled_var).pack(anchor="w", padx=10)
+        
+        sub_mode_row = ctk.CTkFrame(sub_box, fg_color="transparent")
+        sub_mode_row.pack(fill="x", padx=10, pady=2)
+        ctk.CTkLabel(sub_mode_row, text="Mode:", width=45).pack(side="left")
+        self.subtitle_mode_var = ctk.StringVar(value="word")  # Default: word
+        ctk.CTkRadioButton(sub_mode_row, text="Sentence", variable=self.subtitle_mode_var, value="sentence").pack(side="left", padx=3)
+        ctk.CTkRadioButton(sub_mode_row, text="Word", variable=self.subtitle_mode_var, value="word").pack(side="left", padx=3)
+        
+        # Subtitle Position
+        sub_pos_row = ctk.CTkFrame(sub_box, fg_color="transparent")
+        sub_pos_row.pack(fill="x", padx=10, pady=2)
+        ctk.CTkLabel(sub_pos_row, text="Position:", width=45).pack(side="left")
+        self.subtitle_margin_var = ctk.StringVar(value="222")
+        ctk.CTkEntry(sub_pos_row, textvariable=self.subtitle_margin_var, width=40).pack(side="left", padx=3)
+        ctk.CTkLabel(sub_pos_row, text="px").pack(side="left")
+        
+        # Subtitle Font Size
+        sub_font_row = ctk.CTkFrame(sub_box, fg_color="transparent")
+        sub_font_row.pack(fill="x", padx=10, pady=2)
+        ctk.CTkLabel(sub_font_row, text="Font:", width=45).pack(side="left")
+        self.subtitle_fontsize_var = ctk.StringVar(value="25")
+        ctk.CTkEntry(sub_font_row, textvariable=self.subtitle_fontsize_var, width=40).pack(side="left", padx=3)
+        ctk.CTkLabel(sub_font_row, text="px").pack(side="left")
+        
+        # Subtitle Color
+        sub_color_row = ctk.CTkFrame(sub_box, fg_color="transparent")
+        sub_color_row.pack(fill="x", padx=10, pady=2)
+        ctk.CTkLabel(sub_color_row, text="Color:", width=45).pack(side="left")
+        self.subtitle_color_var = ctk.StringVar(value="#ffec00")
+        self.sub_color_btn = ctk.CTkButton(sub_color_row, text="● #ffec00", command=self.pick_subtitle_color, width=70, fg_color="#555555")
+        self.sub_color_btn.pack(side="left", padx=3)
+        ctk.CTkButton(sub_color_row, text="👁 Preview", command=self.preview_subtitle, width=65, fg_color="purple").pack(side="left", padx=3)
+        
+        # Overlay/Insert Media (Full screen with fade)
+        overlay_box = ctk.CTkFrame(left_scroll)
+        overlay_box.pack(fill="x", pady=8)
+        ctk.CTkLabel(overlay_box, text="🎞️ Insert Media (Full Screen)", font=ctk.CTkFont(size=12, weight="bold")).pack(pady=3)
+        self.overlay_listbox = ctk.CTkTextbox(overlay_box, height=50, state="disabled")
+        self.overlay_listbox.pack(fill="x", padx=10, pady=2)
+        overlay_btns = ctk.CTkFrame(overlay_box, fg_color="transparent")
+        overlay_btns.pack(pady=3)
+        ctk.CTkButton(overlay_btns, text="➕ Add", command=self.add_overlay_media, width=55).pack(side="left", padx=3)
+        ctk.CTkButton(overlay_btns, text="🗑️ Clear", command=self.clear_overlay_media, width=55, fg_color="gray").pack(side="left", padx=3)
+        
+        # ===================== RIGHT COLUMN - Script + Log =====================
+        right_frame = ctk.CTkFrame(self)
+        right_frame.grid(row=1, column=1, padx=(5, 10), pady=5, sticky="nsew")
+        right_frame.grid_columnconfigure(0, weight=1)
+        right_frame.grid_rowconfigure(1, weight=2)  # Script area
+        right_frame.grid_rowconfigure(3, weight=1)  # Log area
+        
+        # Script Section
+        ctk.CTkLabel(right_frame, text="📝 Script", font=ctk.CTkFont(size=14, weight="bold")).grid(row=0, column=0, pady=(10, 5))
+        
+        self.script_textbox = ctk.CTkTextbox(right_frame)
+        self.script_textbox.grid(row=1, column=0, padx=10, pady=5, sticky="nsew")
+        self.script_textbox.bind("<KeyRelease>", self.update_segment_info)
+        
+        # Segment Info + Cost
+        self.segment_count_label = ctk.CTkLabel(right_frame, text="📊 Enter script to see segment info", font=ctk.CTkFont(size=10))
+        self.segment_count_label.grid(row=2, column=0, pady=3)
+        
+        # Log Section
+        log_header = ctk.CTkFrame(right_frame, fg_color="transparent")
+        log_header.grid(row=3, column=0, sticky="ew", padx=10)
+        ctk.CTkLabel(log_header, text="📋 Log", font=ctk.CTkFont(size=12, weight="bold")).pack(side="left")
+        self.status_label = ctk.CTkLabel(log_header, text="Ready", font=ctk.CTkFont(size=11))
+        self.status_label.pack(side="right")
+        
+        self.log_textbox = ctk.CTkTextbox(right_frame, height=100)
+        self.log_textbox.grid(row=4, column=0, padx=10, pady=(3, 5), sticky="nsew")
+        self.log_textbox.configure(state="disabled")
+        
+        # Progress Bar
+        self.progress_bar = ctk.CTkProgressBar(right_frame)
+        self.progress_bar.grid(row=5, column=0, padx=10, pady=5, sticky="ew")
+        self.progress_bar.set(0)
+        
+        self.segment_progress_label = ctk.CTkLabel(right_frame, text="", font=ctk.CTkFont(size=10))
+        self.segment_progress_label.grid(row=6, column=0, pady=2)
+        
+        # ===================== BUTTONS (Bottom) =====================
+        btn_frame = ctk.CTkFrame(self, fg_color="transparent")
+        btn_frame.grid(row=2, column=0, columnspan=2, pady=10)
+        
+        self.generate_btn = ctk.CTkButton(btn_frame, text="🎬 Generate Video", command=self.start_generation, 
+                                          fg_color="green", hover_color="darkgreen", width=150, height=38)
+        self.generate_btn.pack(side="left", padx=8)
+        
+        self.extend_btn = ctk.CTkButton(btn_frame, text="➕ Extend (Manual)", command=self.start_extension, 
+                                        fg_color="#FF9800", hover_color="#F57C00", width=130, height=38, state="disabled")
+        self.extend_btn.pack(side="left", padx=8)
+        
+        self.cancel_btn = ctk.CTkButton(btn_frame, text="❌ Cancel", command=self.cancel_generation, 
+                                        fg_color="gray", width=90, height=38)
+        self.cancel_btn.pack(side="left", padx=8)
+    
+    def log(self, message):
+        """Log a message to the textbox."""
+        self.log_textbox.configure(state="normal")
+        self.log_textbox.insert("end", message + "\n")
+        self.log_textbox.see("end")
+        self.log_textbox.configure(state="disabled")
+        self.update_idletasks()
+    
+    def browse_output(self):
+        path = filedialog.askdirectory(title="Select Output Folder")
+        if path:
+            self.output_path_var.set(path)
+    
+    def select_reference_image(self):
+        path = filedialog.askopenfilename(
+            title="Select Reference Image",
+            filetypes=[("Image Files", "*.jpg *.jpeg *.png *.webp")]
+        )
+        if path:
+            self.reference_image_path = path
+            self.ref_image_label.configure(text=os.path.basename(path)[:20])
+            self.log(f"Reference: {os.path.basename(path)}")
+    
+    def clear_reference_image(self):
+        self.reference_image_path = None
+        self.ref_image_label.configure(text="ไม่ได้เลือก")
+    
+    def add_overlay_media(self):
+        """Add overlay image or video for insertion."""
+        paths = filedialog.askopenfilenames(
+            title="Select Images/Videos to Insert",
+            filetypes=[("Media Files", "*.jpg *.jpeg *.png *.webp *.mp4 *.mov *.avi")]
+        )
+        if paths:
+            for path in paths:
+                self.overlay_media_list.append(path)
+            self.update_overlay_display()
+            self.log(f"Added {len(paths)} overlay media files")
+    
+    def clear_overlay_media(self):
+        """Clear all overlay media."""
+        self.overlay_media_list = []
+        self.update_overlay_display()
+    
+    def update_overlay_display(self):
+        """Update the overlay listbox display."""
+        self.overlay_listbox.configure(state="normal")
+        self.overlay_listbox.delete("1.0", "end")
+        if self.overlay_media_list:
+            for i, path in enumerate(self.overlay_media_list):
+                self.overlay_listbox.insert("end", f"{i+1}. {os.path.basename(path)}\n")
+        else:
+            self.overlay_listbox.insert("end", "No media to insert")
+        self.overlay_listbox.configure(state="disabled")
+    
+    def pick_subtitle_color(self):
+        """Open color picker for subtitle color."""
+        color = colorchooser.askcolor(title="Choose Subtitle Color", initialcolor=self.subtitle_color_var.get())
+        if color[1]:
+            self.subtitle_color_var.set(color[1])
+            # Update button text with color preview
+            self.sub_color_btn.configure(text=f"● {color[1]}")
+            self.log(f"Subtitle color: {color[1]}")
+    
+    def preview_subtitle(self):
+        """Preview subtitle appearance using ffmpeg with actual position."""
+        import subprocess
+        import tempfile
+        
+        try:
+            margin = int(self.subtitle_margin_var.get() or 200)
+        except ValueError:
+            margin = 200
+        
+        try:
+            font_size = int(self.subtitle_fontsize_var.get() or 48)
+        except ValueError:
+            font_size = 48
+            
+        color = self.subtitle_color_var.get() or "#FFFFFF"
+        hex_color = color.lstrip('#')
+        
+        # For 9:16 video (1080x1920)
+        width = 1080
+        height = 1920
+        
+        # Calculate Y position from bottom
+        y_position = height - margin - font_size
+        
+        self.log(f"Preview: margin={margin}px, font={font_size}px")
+        self.log(f"Text Y position: {y_position}px from top")
+        self.log(f"Color: {color}")
+        
+        try:
+            preview_path = tempfile.NamedTemporaryFile(suffix='.png', delete=False).name
+            
+            # Create preview with:
+            # - Black background (simulating video)
+            # - Sample subtitle at exact position
+            # - Guide lines to show position
+            cmd = [
+                'ffmpeg', '-y',
+                '-f', 'lavfi',
+                '-i', f'color=c=0x222222:s={width}x{height}:d=1',
+                '-vf', 
+                f"drawtext=text='Subtitle Position Preview':fontsize=32:fontcolor=gray:x=(w-text_w)/2:y=50,"
+                f"drawtext=text='margin\\={margin}px from bottom':fontsize=24:fontcolor=gray:x=(w-text_w)/2:y=100,"
+                f"drawbox=x=0:y={y_position-10}:w={width}:h=2:color=red@0.5:t=fill,"
+                f"drawtext=text='Sample Subtitle Text':fontsize={font_size}:fontcolor={hex_color}:x=(w-text_w)/2:y={y_position}:borderw=2:bordercolor=black,"
+                f"drawtext=text='↑ {margin}px ↓':fontsize=20:fontcolor=yellow:x=(w-text_w)/2:y={height-margin//2}",
+                '-frames:v', '1',
+                preview_path
+            ]
+            
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            
+            if result.returncode == 0 and os.path.exists(preview_path):
+                subprocess.run(['open', preview_path])
+                self.log("✅ Preview opened")
+            else:
+                self.log(f"FFmpeg error: {result.stderr[:300]}")
+        except Exception as e:
+            self.log(f"Preview error: {e}")
+    
+    def update_status(self, text):
+        self.status_label.configure(text=text)
+        self.update_idletasks()
+    
+    def update_progress(self, value):
+        self.progress_bar.set(value)
+        self.update_idletasks()
+    
+    def cancel_generation(self):
+        self.is_generating = False
+        self.update_status("Cancelled")
+        self.generate_btn.configure(state="normal", text="🎬 Generate Video")
+        self.extend_btn.configure(state="normal" if self.last_video_uri else "disabled", text="➕ Extend (Manual)")
+    
+    def start_generation(self):
+        """Start video generation (with auto-extend if enabled)."""
+        script = self.script_textbox.get("1.0", "end-1c").strip()
+        if not script:
+            messagebox.showerror("Error", "กรุณากรอก Script")
+            return
+        
+        output_folder = self.output_path_var.get().strip()
+        if not output_folder:
+            messagebox.showerror("Error", "กรุณาเลือก Output Folder")
+            return
+        
+        os.makedirs(output_folder, exist_ok=True)
+        
+        # Split script
+        self.script_segments = self.split_script(script)
+        self.current_segment_index = 0
+        
+        # Disable buttons
+        self.generate_btn.configure(state="disabled", text="Generating...")
+        self.extend_btn.configure(state="disabled")
+        self.is_generating = True
+        
+        # Get settings
+        language_name = self.language_var.get()
+        language_code = SUPPORTED_LANGUAGES.get(language_name, "en")
+        aspect_ratio = self.aspect_ratio_var.get()
+        reference_image = self.reference_image_path
+        auto_extend = self.auto_extend_var.get()
+        
+        self.last_output_folder = output_folder
+        self.last_aspect_ratio = aspect_ratio
+        
+        # Start in thread
+        threading.Thread(target=self._generate_with_auto_extend, 
+                        args=(language_code, aspect_ratio, output_folder, reference_image, auto_extend)).start()
+    
+    def _generate_with_auto_extend(self, language_code, aspect_ratio, output_folder, reference_image, auto_extend):
+        """Generate video with optional auto-extend."""
+        try:
+            total_segments = len(self.script_segments)
+            self.after(0, lambda: self.log(f"Script แบ่งเป็น {total_segments} ส่วน"))
+            self.after(0, lambda: self.segment_progress_label.configure(text=f"ส่วนที่ 1/{total_segments}"))
+            
+            # Generate first segment
+            first_segment = self.script_segments[0]
+            self.after(0, lambda: self.update_status(f"กำลังสร้างส่วนที่ 1/{total_segments}..."))
+            self.after(0, lambda: self.log(f"[1/{total_segments}] {first_segment[:50]}..."))
+            
+            timestamp = int(time.time())
+            output_path = os.path.join(output_folder, f"news_anchor_{language_code}_{timestamp}.mp4")
+            
+            result = generate_news_anchor_video(
+                script=first_segment,
+                aspect_ratio=aspect_ratio,
+                language_code=language_code,
+                api_key=self.api_key,
+                output_path=output_path,
+                logger=lambda msg: self.after(0, lambda m=msg: self.log(m)),
+                reference_image=reference_image
+            )
+            
+            if not self.is_generating or not result:
+                self.after(0, lambda: self.update_status("Failed or cancelled"))
+                return
+            
+            self.last_video_uri = result.get("video_uri")
+            self.generated_videos.append(result.get("output_path"))
+            progress = 1 / total_segments
+            self.after(0, lambda: self.update_progress(progress))
+            
+            # Auto-extend remaining segments
+            if auto_extend and total_segments > 1:
+                from core.veo_generator import generate_news_anchor_prompt
+                
+                for i in range(1, total_segments):
+                    if not self.is_generating:
+                        return
+                    
+                    segment = self.script_segments[i]
+                    self.after(0, lambda idx=i+1, t=total_segments: self.segment_progress_label.configure(text=f"ส่วนที่ {idx}/{t}"))
+                    self.after(0, lambda idx=i+1, t=total_segments: self.update_status(f"กำลัง Extend ส่วนที่ {idx}/{t}..."))
+                    self.after(0, lambda idx=i+1, t=total_segments, s=segment: self.log(f"[{idx}/{t}] {s[:50]}..."))
+                    
+                    prompt = generate_news_anchor_prompt(segment, language_code)
+                    ext_timestamp = int(time.time())
+                    ext_output_path = os.path.join(output_folder, f"news_anchor_ext{i}_{language_code}_{ext_timestamp}.mp4")
+                    
+                    # Try extension with retry
+                    ext_result = None
+                    max_retries = 2
+                    for attempt in range(max_retries):
+                        self.after(0, lambda a=attempt+1: self.log(f"Extension attempt {a}/{max_retries}..."))
+                        ext_result = extend_video(
+                            video_uri=self.last_video_uri,
+                            prompt=prompt,
+                            aspect_ratio=aspect_ratio,
+                            api_key=self.api_key,
+                            output_path=ext_output_path,
+                            logger=lambda msg: self.after(0, lambda m=msg: self.log(m))
+                        )
+                        if ext_result:
+                            break
+                        if attempt < max_retries - 1:
+                            self.after(0, lambda: self.log("⚠️ Retrying extension..."))
+                            time.sleep(2)
+                    
+                    if not ext_result:
+                        self.after(0, lambda idx=i+1: self.log(f"❌ Extension {idx} failed after {max_retries} attempts"))
+                        self.after(0, lambda: self.log("⚠️ Continuing with available segments..."))
+                        break
+                    
+                    self.last_video_uri = ext_result.get("video_uri")
+                    self.generated_videos.append(ext_result.get("output_path"))
+                    progress = (i + 1) / total_segments
+                    self.after(0, lambda p=progress: self.update_progress(p))
+                    self.after(0, lambda idx=i+1: self.log(f"✅ Segment {idx} completed"))
+            # Post-processing on final video
+            final_video = self.generated_videos[-1] if self.generated_videos else output_path
+            
+            # Calculate and display cost
+            self.total_cost = len(self.generated_videos) * self.VEO_COST_PER_VIDEO
+            self.after(0, lambda: self.log(f"💰 Total cost: ${self.total_cost:.2f} USD"))
+            
+            # Apply subtitles if enabled
+            if self.subtitle_enabled_var.get():
+                self.after(0, lambda: self.update_status("กำลังสร้าง Subtitle..."))
+                subtitle_mode = self.subtitle_mode_var.get()
+                subtitle_margin = int(self.subtitle_margin_var.get() or 200)
+                subtitle_fontsize = int(self.subtitle_fontsize_var.get() or 48)
+                subtitle_color = self.subtitle_color_var.get() or "#FFFFFF"
+                full_script = " ".join(self.script_segments)
+                
+                subtitled_path = final_video.replace(".mp4", "_subtitled.mp4")
+                sub_result = burn_subtitles_for_news(
+                    video_path=final_video,
+                    subtitle_text=full_script,
+                    output_path=subtitled_path,
+                    mode=subtitle_mode,
+                    margin=subtitle_margin,
+                    color=subtitle_color,
+                    fontsize=subtitle_fontsize,
+                    logger=lambda msg: self.after(0, lambda m=msg: self.log(m))
+                )
+                if sub_result:
+                    final_video = sub_result
+                    self.after(0, lambda: self.log("✅ Subtitles added"))
+            
+            # Insert overlay media if any
+            if self.overlay_media_list:
+                self.after(0, lambda: self.update_status("กำลังแทรก Media..."))
+                current_video = final_video
+                video_duration = 8 * len(self.generated_videos)  # Approximate
+                interval = video_duration / (len(self.overlay_media_list) + 1)
+                
+                for i, overlay_path in enumerate(self.overlay_media_list):
+                    start_time = interval * (i + 1)
+                    overlay_output = current_video.replace(".mp4", f"_overlay{i}.mp4")
+                    
+                    overlay_result = insert_overlay_with_fade(
+                        video_path=current_video,
+                        overlay_path=overlay_path,
+                        output_path=overlay_output,
+                        start_time=start_time,
+                        duration=3.0,
+                        fade_duration=0.5,
+                        logger=lambda msg: self.after(0, lambda m=msg: self.log(m))
+                    )
+                    if overlay_result:
+                        current_video = overlay_result
+                        self.after(0, lambda idx=i+1: self.log(f"✅ Overlay {idx} inserted"))
+                
+                final_video = current_video
+            
+            # Rename final video with FINAL prefix for easy identification
+            final_dir = os.path.dirname(final_video)
+            final_name = f"FINAL_{timestamp}_{language_code}.mp4"
+            final_output = os.path.join(final_dir, final_name)
+            
+            try:
+                import shutil
+                shutil.copy2(final_video, final_output)
+                self.after(0, lambda: self.log(f"📁 Final video: {final_name}"))
+                final_video = final_output
+            except Exception as e:
+                self.after(0, lambda err=str(e): self.log(f"Note: Could not rename final: {err}"))
+            
+            # Done
+            self.after(0, lambda: self.update_status("✅ Generation Complete!"))
+            self.after(0, lambda: self.update_progress(1.0))
+            self.after(0, lambda: self.extend_btn.configure(state="normal"))
+            
+            cost_msg = f"💰 ค่าใช้จ่ายรวม: ${self.total_cost:.2f} USD"
+            self.after(0, lambda: messagebox.showinfo("Success", 
+                f"สร้างวิดีโอเสร็จแล้ว!\n\nสร้างทั้งหมด {len(self.generated_videos)} ส่วน\n{cost_msg}\n\nไฟล์สุดท้าย:\n{os.path.basename(final_video)}"))
+            
+        except Exception as e:
+            error_msg = str(e)
+            self.after(0, lambda: self.update_status("Error occurred"))
+            self.after(0, lambda msg=error_msg: self.log(f"Error: {msg}"))
+            self.after(0, lambda msg=error_msg: messagebox.showerror("Error", f"An error occurred: {msg}"))
+        finally:
+            self.is_generating = False
+            self.after(0, lambda: self.generate_btn.configure(state="normal", text="🎬 Generate Video"))
+
+    def start_extension(self):
+        """Manual extension."""
+        if not self.last_video_uri:
+            messagebox.showerror("Error", "ไม่มีวิดีโอที่จะต่อ กรุณาสร้างวิดีโอก่อน")
+            return
+        
+        extension_script = self.script_textbox.get("1.0", "end-1c").strip()
+        if not extension_script:
+            messagebox.showerror("Error", "กรุณากรอก Script สำหรับต่อเนื้อหา")
+            return
+        
+        self.generate_btn.configure(state="disabled")
+        self.extend_btn.configure(state="disabled", text="Extending...")
+        self.is_generating = True
+        
+        language_name = self.language_var.get()
+        language_code = SUPPORTED_LANGUAGES.get(language_name, "en")
+        
+        threading.Thread(target=self._extend_video_manual, args=(extension_script, language_code)).start()
+    
+    def _extend_video_manual(self, script, language_code):
+        """Manual extend in background."""
+        try:
+            self.after(0, lambda: self.update_status("Extending video..."))
+            self.after(0, lambda: self.update_progress(0.2))
+            
+            from core.veo_generator import generate_news_anchor_prompt
+            prompt = generate_news_anchor_prompt(script, language_code)
+            
+            timestamp = int(time.time())
+            output_path = os.path.join(self.last_output_folder, f"news_anchor_ext_{language_code}_{timestamp}.mp4")
+            
+            result = extend_video(
+                video_uri=self.last_video_uri,
+                prompt=prompt,
+                aspect_ratio=self.last_aspect_ratio,
+                api_key=self.api_key,
+                output_path=output_path,
+                logger=lambda msg: self.after(0, lambda m=msg: self.log(m))
+            )
+            
+            if result:
+                self.last_video_uri = result.get("video_uri")
+                self.generated_videos.append(result.get("output_path"))
+                self.after(0, lambda: self.update_status("✅ Extended!"))
+                self.after(0, lambda: self.update_progress(1.0))
+                self.after(0, lambda: messagebox.showinfo("Success", f"Extended to: {os.path.basename(output_path)}"))
+            else:
+                self.after(0, lambda: self.update_status("Extension failed"))
+                self.after(0, lambda: messagebox.showerror("Error", "Extension failed"))
+            
+        except Exception as e:
+            error_msg = str(e)
+            self.after(0, lambda msg=error_msg: self.log(f"Error: {msg}"))
+        finally:
+            self.is_generating = False
+            self.after(0, lambda: self.generate_btn.configure(state="normal", text="🎬 Generate Video"))
+            self.after(0, lambda: self.extend_btn.configure(state="normal", text="➕ Extend (Manual)"))
 
 class CoverGeneratorWindow(ctk.CTkToplevel):
     def __init__(self, parent):

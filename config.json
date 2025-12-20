@@ -1,13 +1,13 @@
 {
-    "api_key": "AIzaSyC3vj10iTZ3vrH40_vIDPVJ4R3rJ1p4Pkw",
+    "api_key": "AIzaSyAn_RE4hIDwTROguqDFxO0dGbgCwr0mHfc",
     "font_name": "Tahoma",
-    "font_size": "20",
-    "font_color": "#69ffc5",
+    "font_size": "25",
+    "font_color": "#ffec00",
     "subtitle_mode": "word",
-    "margin_v": 46,
-    "voice": "Charon",
+    "margin_v": 226,
+    "voice": "Puck",
     "speech_speed": "Normal (1.0x)",
-    "voice_prompt": "fast speak",
+    "voice_prompt": "Normal speak",
     "audio_mode": "trim",
     "music_path": "",
     "image_duration": "5",
@@ -17,7 +17,8 @@
     "logo_enabled": false,
     "logo_path": "/Users/paji/Downloads/Gemini_Generated_Image_265lnj265lnj265l Background Removed.png",
     "logo_position": {
-        "x": 936,
-        "y": 1772
-    }
+        "x": 837,
+        "y": 1650
+    },
+    "logo_scale": 0.3
 }

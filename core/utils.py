@@ -57,3 +57,40 @@ def save_cover_presets(data):
             json.dump(data, f, indent=4)
     except Exception as e:
         print(f"Error saving presets: {e}")
+
+# Settings Presets
+SETTINGS_PRESETS_PATH = "settings_presets.json"
+
+def load_settings_presets():
+    """Load all saved settings presets."""
+    if os.path.exists(SETTINGS_PRESETS_PATH):
+        try:
+            with open(SETTINGS_PRESETS_PATH, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except:
+            return {}
+    return {}
+
+def save_settings_presets(data):
+    """Save settings presets to file."""
+    try:
+        with open(SETTINGS_PRESETS_PATH, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=4, ensure_ascii=False)
+    except Exception as e:
+        print(f"Error saving settings presets: {e}")
+
+def save_settings_preset(name, settings):
+    """Save a single preset by name."""
+    presets = load_settings_presets()
+    presets[name] = settings
+    save_settings_presets(presets)
+
+def delete_settings_preset(name):
+    """Delete a preset by name."""
+    presets = load_settings_presets()
+    if name in presets:
+        del presets[name]
+        save_settings_presets(presets)
+        return True
+    return False
+
