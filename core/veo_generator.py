@@ -57,12 +57,13 @@ def generate_news_anchor_prompt(script, language_code="en"):
     # Use only first 100 characters as context
     script_preview = script[:100] if script else ""
     
-    # Create a professional news anchor prompt
-    prompt = f"""A professional {lang_name}-speaking news anchor presenting live in a modern TV studio. 
-The anchor is sitting confidently at a news desk with professional studio lighting, speaking directly to the camera.
-They deliver the news clearly: "{script_preview}"
-Clean broadcast video. Professional attire. Natural gestures and expressions.
-Modern news studio with blue-toned graphics in background."""
+    # Create a professional news anchor prompt with FAST speaking pace
+    prompt = f"""A professional {lang_name}-speaking news anchor rapidly presenting live breaking news in a modern TV studio. 
+The anchor speaks QUICKLY and URGENTLY at a fast pace, delivering news with energy.
+They are sitting at a news desk, speaking directly to camera with animated hand gestures.
+They say rapidly: "{script_preview}"
+Fast-paced news delivery. Breaking news energy. Professional attire.
+Modern news studio with blue graphics."""
     
     return prompt
 

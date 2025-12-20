@@ -387,9 +387,7 @@ class VideoEditorApp(ctk.CTk):
         self.img_to_vid_btn = ctk.CTkButton(self.sidebar_frame, text="Images to Videos", command=self.start_images_to_videos, fg_color="orange", hover_color="#cc6600")
         self.img_to_vid_btn.grid(row=32, column=0, padx=20, pady=10)
 
-        # News Anchor Generator Button
-        self.news_anchor_btn = ctk.CTkButton(self.sidebar_frame, text="📺 News Anchor Generator", command=self.open_news_anchor_generator, fg_color="#2196F3", hover_color="#1976D2")
-        self.news_anchor_btn.grid(row=33, column=0, padx=20, pady=10)
+
 
     def create_main_area(self):
         self.main_frame = ctk.CTkFrame(self, corner_radius=0)
@@ -402,6 +400,9 @@ class VideoEditorApp(ctk.CTk):
         # Header
         self.header_frame = ctk.CTkFrame(self.main_frame, fg_color="transparent")
         self.header_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=10)
+        
+        self.news_anchor_btn = ctk.CTkButton(self.header_frame, text="📺 News Anchor", command=self.open_news_anchor_generator, fg_color="#2196F3", hover_color="#1976D2", width=130)
+        self.news_anchor_btn.pack(side="right", padx=5)
         
         self.add_lang_btn = ctk.CTkButton(self.header_frame, text="+ Add Language", command=self.add_language_dialog)
         self.add_lang_btn.pack(side="right")
@@ -1646,6 +1647,8 @@ class NewsAnchorGeneratorWindow(ctk.CTkToplevel):
         self.current_segment_index = 0
         self.overlay_media_list = []  # List of overlay images/videos
         self.total_cost = 0.0
+        self.last_api_call = 0  # Timestamp of last API call
+        self.API_DELAY_SECONDS = 35  # Wait 35 seconds between calls (2 per minute limit)
         
         self.create_ui()
     
@@ -1720,6 +1723,43 @@ class NewsAnchorGeneratorWindow(ctk.CTkToplevel):
         left_scroll.pack(fill="both", expand=True, padx=5, pady=5)
         
         ctk.CTkLabel(left_scroll, text="⚙️ Settings", font=ctk.CTkFont(size=14, weight="bold")).pack(pady=(5, 10))
+        
+        # API Key Management
+        api_box = ctk.CTkFrame(left_scroll)
+        api_box.pack(fill="x", pady=5)
+        ctk.CTkLabel(api_box, text="🔑 API Keys", font=ctk.CTkFont(size=12, weight="bold")).pack(pady=3)
+        
+        # Saved keys dropdown
+        api_select_row = ctk.CTkFrame(api_box, fg_color="transparent")
+        api_select_row.pack(fill="x", padx=10, pady=2)
+        ctk.CTkLabel(api_select_row, text="Select:", width=45).pack(side="left")
+        self.api_keys_dict = self.load_api_keys()  # {name: key}
+        self.selected_api_name = ctk.StringVar(value="-- Select Key --")
+        key_names = list(self.api_keys_dict.keys()) if self.api_keys_dict else ["-- No saved keys --"]
+        self.api_dropdown = ctk.CTkOptionMenu(api_select_row, variable=self.selected_api_name, values=key_names, width=130, command=self.on_api_key_selected)
+        self.api_dropdown.pack(side="left", padx=3)
+        
+        # API Key input
+        api_input_row = ctk.CTkFrame(api_box, fg_color="transparent")
+        api_input_row.pack(fill="x", padx=10, pady=2)
+        ctk.CTkLabel(api_input_row, text="Key:", width=45).pack(side="left")
+        self.veo_api_key_var = ctk.StringVar(value="")
+        self.veo_api_entry = ctk.CTkEntry(api_input_row, textvariable=self.veo_api_key_var, width=160, show="*", placeholder_text="API Key")
+        self.veo_api_entry.pack(side="left", padx=3)
+        
+        # Key name for saving
+        api_name_row = ctk.CTkFrame(api_box, fg_color="transparent")
+        api_name_row.pack(fill="x", padx=10, pady=2)
+        ctk.CTkLabel(api_name_row, text="Name:", width=45).pack(side="left")
+        self.api_name_var = ctk.StringVar(value="")
+        ctk.CTkEntry(api_name_row, textvariable=self.api_name_var, width=100, placeholder_text="Key name").pack(side="left", padx=3)
+        ctk.CTkButton(api_name_row, text="💾 Save", command=self.save_api_key, width=50, fg_color="green").pack(side="left", padx=2)
+        
+        # Buttons row
+        api_btn_row = ctk.CTkFrame(api_box, fg_color="transparent")
+        api_btn_row.pack(fill="x", padx=10, pady=3)
+        ctk.CTkButton(api_btn_row, text="✓ Check API", command=self.check_api_key, width=80, fg_color="purple").pack(side="left", padx=3)
+        ctk.CTkButton(api_btn_row, text="🗑️ Delete", command=self.delete_api_key, width=60, fg_color="gray").pack(side="left", padx=3)
         
         # Language (Default: English)
         lang_frame = ctk.CTkFrame(left_scroll, fg_color="transparent")
@@ -1921,6 +1961,104 @@ class NewsAnchorGeneratorWindow(ctk.CTkToplevel):
             self.overlay_listbox.insert("end", "No media to insert")
         self.overlay_listbox.configure(state="disabled")
     
+    def get_api_keys_file(self):
+        """Get path to API keys storage file."""
+        return os.path.join(os.path.dirname(os.path.abspath(__file__)), "veo_api_keys.json")
+    
+    def load_api_keys(self):
+        """Load saved API keys from file."""
+        try:
+            import json
+            filepath = self.get_api_keys_file()
+            if os.path.exists(filepath):
+                with open(filepath, 'r') as f:
+                    return json.load(f)
+        except:
+            pass
+        return {}
+    
+    def save_api_keys_to_file(self, keys_dict):
+        """Save API keys to file."""
+        import json
+        filepath = self.get_api_keys_file()
+        with open(filepath, 'w') as f:
+            json.dump(keys_dict, f, indent=2)
+    
+    def save_api_key(self):
+        """Save current API key with name."""
+        name = self.api_name_var.get().strip()
+        key = self.veo_api_key_var.get().strip()
+        
+        if not name:
+            messagebox.showerror("Error", "กรุณากรอกชื่อ Key")
+            return
+        if not key:
+            messagebox.showerror("Error", "กรุณากรอก API Key")
+            return
+        
+        self.api_keys_dict[name] = key
+        self.save_api_keys_to_file(self.api_keys_dict)
+        self.refresh_api_dropdown()
+        self.selected_api_name.set(name)
+        self.log(f"✅ Saved API key: {name}")
+        messagebox.showinfo("Success", f"Saved API key: {name}")
+    
+    def delete_api_key(self):
+        """Delete selected API key."""
+        name = self.selected_api_name.get()
+        if name in self.api_keys_dict:
+            if messagebox.askyesno("Confirm", f"Delete API key '{name}'?"):
+                del self.api_keys_dict[name]
+                self.save_api_keys_to_file(self.api_keys_dict)
+                self.refresh_api_dropdown()
+                self.veo_api_key_var.set("")
+                self.log(f"🗑️ Deleted API key: {name}")
+    
+    def on_api_key_selected(self, name):
+        """Handle API key selection from dropdown."""
+        if name in self.api_keys_dict:
+            self.veo_api_key_var.set(self.api_keys_dict[name])
+            self.log(f"Selected API key: {name}")
+    
+    def refresh_api_dropdown(self):
+        """Refresh API keys dropdown."""
+        key_names = list(self.api_keys_dict.keys()) if self.api_keys_dict else ["-- No saved keys --"]
+        self.api_dropdown.configure(values=key_names)
+        if key_names and key_names[0] != "-- No saved keys --":
+            self.selected_api_name.set(key_names[0])
+        else:
+            self.selected_api_name.set("-- Select Key --")
+    
+    def check_api_key(self):
+        """Check if API key is valid."""
+        api_key = self.veo_api_key_var.get().strip()
+        if not api_key:
+            messagebox.showerror("Error", "กรุณากรอก API Key")
+            return
+        
+        self.log("Checking API key...")
+        
+        def check_thread():
+            try:
+                import requests
+                url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
+                response = requests.get(url, timeout=10)
+                
+                if response.status_code == 200:
+                    self.after(0, lambda: self.log("✅ API key is valid!"))
+                    self.after(0, lambda: messagebox.showinfo("Success", "API key is valid!"))
+                elif response.status_code == 401:
+                    self.after(0, lambda: self.log("❌ Invalid API key"))
+                    self.after(0, lambda: messagebox.showerror("Error", "Invalid API key"))
+                else:
+                    self.after(0, lambda c=response.status_code: self.log(f"⚠️ API check: status {c}"))
+                    self.after(0, lambda c=response.status_code: messagebox.showwarning("Warning", f"Status: {c}"))
+            except Exception as e:
+                self.after(0, lambda err=str(e): self.log(f"Error: {err}"))
+                self.after(0, lambda err=str(e): messagebox.showerror("Error", f"Connection error: {err}"))
+        
+        threading.Thread(target=check_thread).start()
+    
     def pick_subtitle_color(self):
         """Open color picker for subtitle color."""
         color = colorchooser.askcolor(title="Choose Subtitle Color", initialcolor=self.subtitle_color_var.get())
@@ -2016,6 +2154,21 @@ class NewsAnchorGeneratorWindow(ctk.CTkToplevel):
             messagebox.showerror("Error", "กรุณาเลือก Output Folder")
             return
         
+        # Get API key from local field first, fallback to parent
+        api_key = self.veo_api_key_var.get().strip()
+        if not api_key:
+            # Try to get from parent app
+            try:
+                api_key = self.parent.api_key_entry.get().strip()
+            except:
+                pass
+        
+        if not api_key:
+            messagebox.showerror("Error", "กรุณากรอก API Key")
+            return
+        
+        self.api_key = api_key
+        
         os.makedirs(output_folder, exist_ok=True)
         
         # Split script
@@ -2053,9 +2206,21 @@ class NewsAnchorGeneratorWindow(ctk.CTkToplevel):
             self.after(0, lambda: self.update_status(f"กำลังสร้างส่วนที่ 1/{total_segments}..."))
             self.after(0, lambda: self.log(f"[1/{total_segments}] {first_segment[:50]}..."))
             
+            # Rate limiting: wait if needed
+            elapsed = time.time() - self.last_api_call
+            if elapsed < self.API_DELAY_SECONDS and self.last_api_call > 0:
+                wait_time = int(self.API_DELAY_SECONDS - elapsed)
+                self.after(0, lambda w=wait_time: self.log(f"⏳ Rate limit: waiting {w}s before API call..."))
+                for i in range(wait_time, 0, -1):
+                    if not self.is_generating:
+                        return
+                    self.after(0, lambda sec=i: self.update_status(f"⏳ Rate limit: {sec}s..."))
+                    time.sleep(1)
+            
             timestamp = int(time.time())
             output_path = os.path.join(output_folder, f"news_anchor_{language_code}_{timestamp}.mp4")
             
+            self.last_api_call = time.time()  # Mark API call time
             result = generate_news_anchor_video(
                 script=first_segment,
                 aspect_ratio=aspect_ratio,
@@ -2092,11 +2257,23 @@ class NewsAnchorGeneratorWindow(ctk.CTkToplevel):
                     ext_timestamp = int(time.time())
                     ext_output_path = os.path.join(output_folder, f"news_anchor_ext{i}_{language_code}_{ext_timestamp}.mp4")
                     
+                    # Rate limiting: wait if needed
+                    elapsed = time.time() - self.last_api_call
+                    if elapsed < self.API_DELAY_SECONDS:
+                        wait_time = int(self.API_DELAY_SECONDS - elapsed)
+                        self.after(0, lambda w=wait_time: self.log(f"⏳ Rate limit: waiting {w}s..."))
+                        for sec in range(wait_time, 0, -1):
+                            if not self.is_generating:
+                                return
+                            self.after(0, lambda s=sec: self.update_status(f"⏳ Rate limit: {s}s..."))
+                            time.sleep(1)
+                    
                     # Try extension with retry
                     ext_result = None
                     max_retries = 2
                     for attempt in range(max_retries):
                         self.after(0, lambda a=attempt+1: self.log(f"Extension attempt {a}/{max_retries}..."))
+                        self.last_api_call = time.time()  # Mark API call time
                         ext_result = extend_video(
                             video_uri=self.last_video_uri,
                             prompt=prompt,
@@ -2128,7 +2305,36 @@ class NewsAnchorGeneratorWindow(ctk.CTkToplevel):
             self.total_cost = len(self.generated_videos) * self.VEO_COST_PER_VIDEO
             self.after(0, lambda: self.log(f"💰 Total cost: ${self.total_cost:.2f} USD"))
             
-            # Apply subtitles if enabled
+            # Insert overlay media FIRST (so subtitles appear on top)
+            if self.overlay_media_list:
+                self.after(0, lambda: self.update_status("กำลังแทรก Media..."))
+                current_video = final_video
+                
+                # Insert overlays starting at 5 seconds, spaced by overlay duration + 2s gap
+                base_start_time = 5.0
+                overlay_duration = 6.5
+                gap_between = 2.0
+                
+                for i, overlay_path in enumerate(self.overlay_media_list):
+                    start_time = base_start_time + (i * (overlay_duration + gap_between))
+                    overlay_output = current_video.replace(".mp4", f"_overlay{i}.mp4")
+                    
+                    overlay_result = insert_overlay_with_fade(
+                        video_path=current_video,
+                        overlay_path=overlay_path,
+                        output_path=overlay_output,
+                        start_time=start_time,
+                        duration=overlay_duration,
+                        fade_duration=0.5,
+                        logger=lambda msg: self.after(0, lambda m=msg: self.log(m))
+                    )
+                    if overlay_result:
+                        current_video = overlay_result
+                        self.after(0, lambda idx=i+1, st=start_time: self.log(f"✅ Overlay {idx} inserted at {st:.1f}s"))
+                
+                final_video = current_video
+            
+            # Apply subtitles LAST (so they appear on top of overlays)
             if self.subtitle_enabled_var.get():
                 self.after(0, lambda: self.update_status("กำลังสร้าง Subtitle..."))
                 subtitle_mode = self.subtitle_mode_var.get()
@@ -2151,32 +2357,6 @@ class NewsAnchorGeneratorWindow(ctk.CTkToplevel):
                 if sub_result:
                     final_video = sub_result
                     self.after(0, lambda: self.log("✅ Subtitles added"))
-            
-            # Insert overlay media if any
-            if self.overlay_media_list:
-                self.after(0, lambda: self.update_status("กำลังแทรก Media..."))
-                current_video = final_video
-                video_duration = 8 * len(self.generated_videos)  # Approximate
-                interval = video_duration / (len(self.overlay_media_list) + 1)
-                
-                for i, overlay_path in enumerate(self.overlay_media_list):
-                    start_time = interval * (i + 1)
-                    overlay_output = current_video.replace(".mp4", f"_overlay{i}.mp4")
-                    
-                    overlay_result = insert_overlay_with_fade(
-                        video_path=current_video,
-                        overlay_path=overlay_path,
-                        output_path=overlay_output,
-                        start_time=start_time,
-                        duration=3.0,
-                        fade_duration=0.5,
-                        logger=lambda msg: self.after(0, lambda m=msg: self.log(m))
-                    )
-                    if overlay_result:
-                        current_video = overlay_result
-                        self.after(0, lambda idx=i+1: self.log(f"✅ Overlay {idx} inserted"))
-                
-                final_video = current_video
             
             # Rename final video with FINAL prefix for easy identification
             final_dir = os.path.dirname(final_video)
