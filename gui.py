@@ -8,10 +8,11 @@ import subprocess
 from PIL import Image, ImageTk
 from core.tts import generate_audio, verify_api_key, GEMINI_VOICES, SPEECH_SPEEDS
 from core.subtitles import generate_subtitles, save_srt
-from core.video import merge_audio_video, burn_subtitles, extract_frame, burn_subtitle_image, get_audio_duration, create_slideshow_video, overlay_logo, create_images_to_videos, concatenate_videos, insert_overlay_with_fade, burn_subtitles_for_news
+from core.video import merge_audio_video, burn_subtitles, extract_frame, burn_subtitle_image, get_audio_duration, create_slideshow_video, overlay_logo, create_images_to_videos, concatenate_videos, insert_overlay_with_fade, insert_multiple_overlays, burn_subtitles_for_news
 from core.utils import generate_id, create_manifest, load_config, save_config, load_cover_presets, save_cover_presets, load_settings_presets, save_settings_preset, delete_settings_preset
 from core.veo_generator import generate_news_anchor_video, verify_veo_access, ASPECT_RATIOS, extend_video
 from core.translation import translate_text
+from core.video_translation import translate_video
 from core.image_gen import draw_text_on_image
 import random
 import time
@@ -403,7 +404,10 @@ class VideoEditorApp(ctk.CTk):
         
         self.news_anchor_btn = ctk.CTkButton(self.header_frame, text="📺 News Anchor", command=self.open_news_anchor_generator, fg_color="#2196F3", hover_color="#1976D2", width=130)
         self.news_anchor_btn.pack(side="right", padx=5)
-        
+
+        self.translate_video_btn = ctk.CTkButton(self.header_frame, text="🌐 Translate Video", command=self.open_video_translation, fg_color="#9C27B0", hover_color="#7B1FA2", width=130)
+        self.translate_video_btn.pack(side="right", padx=5)
+
         self.add_lang_btn = ctk.CTkButton(self.header_frame, text="+ Add Language", command=self.add_language_dialog)
         self.add_lang_btn.pack(side="right")
         
@@ -1614,15 +1618,544 @@ class VideoEditorApp(ctk.CTk):
         if not api_key:
             messagebox.showerror("Error", "Please enter an API Key first.")
             return
-        
+
         NewsAnchorGeneratorWindow(self, api_key)
+
+    def open_video_translation(self):
+        """Open the Video Translation dialog."""
+        VideoTranslationWindow(self)
+
+
+class VideoTranslationWindow(ctk.CTkToplevel):
+    """Window for translating videos with subtitle or full dubbing mode."""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.parent = parent
+        self.source_video = None
+        self.output_folder = None
+
+        # Load saved settings
+        self.config = load_config()
+        self.sub_color = self.config.get("translate_sub_color", "#FFFFFF")
+
+        self.title("Video Translation")
+        self.geometry("750x750")
+        self.transient(parent)
+
+        self.create_widgets()
+
+        # Load saved API key
+        saved_api_key = self.config.get("translate_api_key", "")
+        if saved_api_key:
+            self.api_key_entry.insert(0, saved_api_key)
+
+    def create_widgets(self):
+        # Main scrollable container
+        main_container = ctk.CTkScrollableFrame(self)
+        main_container.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # Header
+        header = ctk.CTkLabel(main_container, text="Video Translation", font=ctk.CTkFont(size=22, weight="bold"))
+        header.pack(pady=(10, 5))
+
+        subtitle = ctk.CTkLabel(main_container, text="Translate video with subtitles or full dubbing",
+                                font=ctk.CTkFont(size=12), text_color="gray")
+        subtitle.pack(pady=(0, 15))
+
+        # === API Key Section ===
+        api_frame = ctk.CTkFrame(main_container)
+        api_frame.pack(fill="x", padx=10, pady=8)
+
+        api_header = ctk.CTkFrame(api_frame, fg_color="transparent")
+        api_header.pack(fill="x", padx=15, pady=(10, 5))
+
+        api_label = ctk.CTkLabel(api_header, text="Gemini API Key", font=ctk.CTkFont(weight="bold"))
+        api_label.pack(side="left")
+
+        api_link = ctk.CTkLabel(api_header, text="Get API Key", font=ctk.CTkFont(size=11),
+                                text_color="#4A9EFF", cursor="hand2")
+        api_link.pack(side="right")
+        api_link.bind("<Button-1>", lambda e: self.open_api_link())
+
+        self.api_key_entry = ctk.CTkEntry(api_frame, placeholder_text="Enter your Gemini API Key...", show="*", height=35)
+        self.api_key_entry.pack(fill="x", padx=15, pady=(0, 10))
+
+        # === Source & Output Section ===
+        io_frame = ctk.CTkFrame(main_container)
+        io_frame.pack(fill="x", padx=10, pady=8)
+
+        io_label = ctk.CTkLabel(io_frame, text="Input / Output", font=ctk.CTkFont(weight="bold"))
+        io_label.pack(anchor="w", padx=15, pady=(10, 8))
+
+        # Source Video Row
+        source_row = ctk.CTkFrame(io_frame, fg_color="transparent")
+        source_row.pack(fill="x", padx=15, pady=5)
+
+        self.select_video_btn = ctk.CTkButton(source_row, text="Select Video", command=self.select_video,
+                                               width=120, fg_color="#2196F3", hover_color="#1976D2")
+        self.select_video_btn.pack(side="left")
+
+        self.video_label = ctk.CTkLabel(source_row, text="No video selected", text_color="gray")
+        self.video_label.pack(side="left", padx=15)
+
+        # Output Folder Row
+        output_row = ctk.CTkFrame(io_frame, fg_color="transparent")
+        output_row.pack(fill="x", padx=15, pady=(5, 10))
+
+        self.select_output_btn = ctk.CTkButton(output_row, text="Output Folder", command=self.select_output_folder,
+                                                width=120, fg_color="#607D8B", hover_color="#455A64")
+        self.select_output_btn.pack(side="left")
+
+        self.output_label = ctk.CTkLabel(output_row, text="Same as source video", text_color="gray")
+        self.output_label.pack(side="left", padx=15)
+
+        # === Translation Settings Section ===
+        settings_frame = ctk.CTkFrame(main_container)
+        settings_frame.pack(fill="x", padx=10, pady=8)
+
+        settings_label = ctk.CTkLabel(settings_frame, text="Translation Settings", font=ctk.CTkFont(weight="bold"))
+        settings_label.pack(anchor="w", padx=15, pady=(10, 8))
+
+        # Mode & Language Row
+        mode_lang_row = ctk.CTkFrame(settings_frame, fg_color="transparent")
+        mode_lang_row.pack(fill="x", padx=15, pady=5)
+
+        # Mode Selection
+        mode_container = ctk.CTkFrame(mode_lang_row, fg_color="transparent")
+        mode_container.pack(side="left", fill="x", expand=True)
+
+        mode_label = ctk.CTkLabel(mode_container, text="Mode:", font=ctk.CTkFont(size=12))
+        mode_label.pack(anchor="w")
+
+        self.mode_var = ctk.StringVar(value="subtitle")
+        mode_menu = ctk.CTkSegmentedButton(mode_container, values=["subtitle", "dubbing"],
+                                            variable=self.mode_var, command=self.toggle_dubbing_options)
+        mode_menu.pack(fill="x", pady=(3, 0))
+
+        # Language Selection
+        lang_container = ctk.CTkFrame(mode_lang_row, fg_color="transparent")
+        lang_container.pack(side="right", padx=(20, 0))
+
+        lang_label = ctk.CTkLabel(lang_container, text="Target Language:", font=ctk.CTkFont(size=12))
+        lang_label.pack(anchor="w")
+
+        self.target_lang_var = ctk.StringVar(value="English")
+        self.lang_dropdown = ctk.CTkOptionMenu(lang_container, variable=self.target_lang_var,
+                                                values=list(SUPPORTED_LANGUAGES.keys()), width=150)
+        self.lang_dropdown.pack(pady=(3, 0))
+
+        # === Dubbing Options Frame (collapsible) ===
+        self.dubbing_frame = ctk.CTkFrame(main_container)
+
+        dub_label = ctk.CTkLabel(self.dubbing_frame, text="Dubbing Options", font=ctk.CTkFont(weight="bold"))
+        dub_label.pack(anchor="w", padx=15, pady=(10, 8))
+
+        dub_options_row = ctk.CTkFrame(self.dubbing_frame, fg_color="transparent")
+        dub_options_row.pack(fill="x", padx=15, pady=5)
+
+        # Voice Selection
+        voice_container = ctk.CTkFrame(dub_options_row, fg_color="transparent")
+        voice_container.pack(side="left")
+
+        voice_label = ctk.CTkLabel(voice_container, text="Voice:", font=ctk.CTkFont(size=12))
+        voice_label.pack(anchor="w")
+
+        self.voice_var = ctk.StringVar(value=GEMINI_VOICES[0])
+        self.voice_dropdown = ctk.CTkOptionMenu(voice_container, variable=self.voice_var,
+                                                 values=GEMINI_VOICES, width=120)
+        self.voice_dropdown.pack(pady=(3, 0))
+
+        # Speed Selection
+        speed_container = ctk.CTkFrame(dub_options_row, fg_color="transparent")
+        speed_container.pack(side="left", padx=(20, 0))
+
+        speed_label = ctk.CTkLabel(speed_container, text="Speed:", font=ctk.CTkFont(size=12))
+        speed_label.pack(anchor="w")
+
+        self.speed_var = ctk.StringVar(value="Normal (1.0x)")
+        self.speed_dropdown = ctk.CTkOptionMenu(speed_container, variable=self.speed_var,
+                                                 values=list(SPEECH_SPEEDS.keys()), width=140)
+        self.speed_dropdown.pack(pady=(3, 0))
+
+        # Add Subtitles Checkbox
+        self.add_subs_var = ctk.BooleanVar(value=True)
+        self.add_subs_check = ctk.CTkCheckBox(self.dubbing_frame, text="Also add translated subtitles",
+                                               variable=self.add_subs_var)
+        self.add_subs_check.pack(anchor="w", padx=15, pady=(5, 10))
+
+        # Initially hide dubbing options
+        self.toggle_dubbing_options()
+
+        # === Subtitle Settings Section ===
+        sub_frame = ctk.CTkFrame(main_container)
+        sub_frame.pack(fill="x", padx=10, pady=8)
+
+        sub_header_row = ctk.CTkFrame(sub_frame, fg_color="transparent")
+        sub_header_row.pack(fill="x", padx=15, pady=(10, 8))
+
+        sub_label = ctk.CTkLabel(sub_header_row, text="Subtitle Settings", font=ctk.CTkFont(weight="bold"))
+        sub_label.pack(side="left")
+
+        # Preview Button
+        self.preview_btn = ctk.CTkButton(sub_header_row, text="Preview", command=self.show_preview,
+                                          width=80, height=28, fg_color="#FF9800", hover_color="#F57C00",
+                                          font=ctk.CTkFont(size=12))
+        self.preview_btn.pack(side="right")
+
+        # Row 1: Subtitle Mode
+        mode_row = ctk.CTkFrame(sub_frame, fg_color="transparent")
+        mode_row.pack(fill="x", padx=15, pady=5)
+
+        sub_mode_label = ctk.CTkLabel(mode_row, text="Subtitle Mode:", font=ctk.CTkFont(size=12))
+        sub_mode_label.pack(side="left")
+
+        self.sub_mode_var = ctk.StringVar(value=self.config.get("translate_sub_mode", "word"))
+        sub_mode_menu = ctk.CTkSegmentedButton(mode_row, values=["sentence", "word"],
+                                                variable=self.sub_mode_var, command=self.save_settings, width=200)
+        sub_mode_menu.pack(side="left", padx=(10, 0))
+
+        # Row 2: Font Size, Margin V, Color
+        settings_row = ctk.CTkFrame(sub_frame, fg_color="transparent")
+        settings_row.pack(fill="x", padx=15, pady=5)
+
+        # Font Size
+        font_container = ctk.CTkFrame(settings_row, fg_color="transparent")
+        font_container.pack(side="left")
+
+        font_label = ctk.CTkLabel(font_container, text="Font Size:", font=ctk.CTkFont(size=12))
+        font_label.pack(anchor="w")
+
+        self.font_size_entry = ctk.CTkEntry(font_container, width=70, height=32)
+        self.font_size_entry.insert(0, self.config.get("translate_font_size", "25"))
+        self.font_size_entry.pack(pady=(3, 0))
+
+        # Margin V
+        margin_container = ctk.CTkFrame(settings_row, fg_color="transparent")
+        margin_container.pack(side="left", padx=(15, 0))
+
+        margin_label = ctk.CTkLabel(margin_container, text="Margin V:", font=ctk.CTkFont(size=12))
+        margin_label.pack(anchor="w")
+
+        self.margin_entry = ctk.CTkEntry(margin_container, width=70, height=32)
+        self.margin_entry.insert(0, self.config.get("translate_margin_v", "50"))
+        self.margin_entry.pack(pady=(3, 0))
+
+        # Subtitle Color
+        color_container = ctk.CTkFrame(settings_row, fg_color="transparent")
+        color_container.pack(side="left", padx=(15, 0))
+
+        color_label = ctk.CTkLabel(color_container, text="Color:", font=ctk.CTkFont(size=12))
+        color_label.pack(anchor="w")
+
+        self.color_btn = ctk.CTkButton(color_container, text="Text Color", width=100, height=32,
+                                        command=self.pick_subtitle_color)
+        self.color_btn.pack(pady=(3, 0))
+        self._update_color_btn()
+
+        # Row 3: Preview Canvas (hidden by default)
+        self.preview_frame = ctk.CTkFrame(sub_frame)
+        self.preview_canvas = None
+        self.preview_visible = False
+
+        # === Progress Section ===
+        log_frame = ctk.CTkFrame(main_container)
+        log_frame.pack(fill="both", expand=True, padx=10, pady=8)
+
+        log_label = ctk.CTkLabel(log_frame, text="Progress", font=ctk.CTkFont(weight="bold"))
+        log_label.pack(anchor="w", padx=15, pady=(10, 5))
+
+        self.log_text = ctk.CTkTextbox(log_frame, height=100)
+        self.log_text.pack(fill="both", expand=True, padx=15, pady=(0, 10))
+
+        # === Action Button ===
+        self.translate_btn = ctk.CTkButton(main_container, text="Start Translation",
+                                            command=self.start_translation,
+                                            fg_color="#4CAF50", hover_color="#388E3C",
+                                            height=45, font=ctk.CTkFont(size=14, weight="bold"))
+        self.translate_btn.pack(fill="x", padx=10, pady=(5, 15))
+
+    def open_api_link(self):
+        import webbrowser
+        webbrowser.open("https://aistudio.google.com/apikey")
+
+    def select_output_folder(self):
+        folder = filedialog.askdirectory()
+        if folder:
+            self.output_folder = folder
+            self.output_label.configure(text=os.path.basename(folder), text_color="white")
+
+    def log(self, message):
+        self.after(0, lambda: self._log(message))
+
+    def _log(self, message):
+        self.log_text.insert("end", message + "\n")
+        self.log_text.see("end")
+
+    def select_video(self):
+        path = filedialog.askopenfilename(filetypes=[("Video Files", "*.mp4 *.mov *.avi *.mkv")])
+        if path:
+            self.source_video = path
+            self.video_label.configure(text=os.path.basename(path), text_color="white")
+
+    def toggle_dubbing_options(self, value=None):
+        if self.mode_var.get() == "dubbing":
+            self.dubbing_frame.pack(fill="x", padx=10, pady=8)
+        else:
+            self.dubbing_frame.pack_forget()
+
+    def save_settings(self, value=None):
+        """Save current settings to config."""
+        self.config["translate_sub_mode"] = self.sub_mode_var.get()
+        self.config["translate_font_size"] = self.font_size_entry.get()
+        self.config["translate_margin_v"] = self.margin_entry.get()
+        self.config["translate_sub_color"] = self.sub_color
+        save_config(self.config)
+
+    def _update_color_btn(self):
+        """Update color button appearance based on selected color."""
+        self.color_btn.configure(
+            fg_color=self.sub_color,
+            text_color="black" if self.sub_color.upper() > "#AAAAAA" else "white"
+        )
+
+    def pick_subtitle_color(self):
+        """Open color picker dialog."""
+        color = colorchooser.askcolor(title="Choose Subtitle Color", color=self.sub_color)
+        if color[1]:
+            self.sub_color = color[1]
+            self._update_color_btn()
+            # Save color to config
+            self.config["translate_sub_color"] = self.sub_color
+            save_config(self.config)
+            # Update preview if visible
+            if self.preview_visible:
+                self.update_preview()
+
+    def show_preview(self):
+        """Toggle subtitle position preview."""
+        if not self.source_video:
+            messagebox.showwarning("Warning", "Please select a video first to preview subtitle position.")
+            return
+
+        if self.preview_visible:
+            self.preview_frame.pack_forget()
+            self.preview_visible = False
+            self.preview_btn.configure(text="Preview")
+        else:
+            self.preview_frame.pack(fill="x", padx=15, pady=10)
+            self.preview_visible = True
+            self.preview_btn.configure(text="Hide")
+            self.update_preview()
+
+    def update_preview(self):
+        """Update the preview canvas with current settings using ffmpeg."""
+        try:
+            from PIL import Image, ImageTk, ImageDraw, ImageFont
+            import subprocess
+            import tempfile
+
+            # Clear previous preview
+            if self.preview_canvas:
+                self.preview_canvas.destroy()
+                self.preview_canvas = None
+
+            # Extract first frame using ffmpeg
+            with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
+                tmp_path = tmp.name
+
+            cmd = [
+                'ffmpeg', '-y', '-i', self.source_video,
+                '-vframes', '1', '-q:v', '2', tmp_path
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+
+            if result.returncode != 0 or not os.path.exists(tmp_path):
+                raise Exception("Failed to extract frame from video")
+
+            # Load image
+            img = Image.open(tmp_path)
+            orig_w, orig_h = img.size
+
+            # Resize for preview (max width 650)
+            preview_w = 650
+            preview_h = int(orig_h * (preview_w / orig_w))
+            img = img.resize((preview_w, preview_h), Image.Resampling.LANCZOS)
+
+            # Draw subtitle preview
+            draw = ImageDraw.Draw(img)
+
+            try:
+                font_size = int(self.font_size_entry.get())
+            except:
+                font_size = 48
+
+            # Scale font size for preview
+            scaled_font_size = max(12, int(font_size * (preview_w / orig_w)))
+
+            try:
+                font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", scaled_font_size)
+            except:
+                try:
+                    font = ImageFont.truetype("/System/Library/Fonts/Arial.ttf", scaled_font_size)
+                except:
+                    font = ImageFont.load_default()
+
+            # Sample text based on mode
+            if self.sub_mode_var.get() == "word":
+                sample_text = "Sample"
+            else:
+                sample_text = "Sample subtitle text here"
+
+            # Calculate position
+            try:
+                margin_v = int(self.margin_entry.get())
+            except:
+                margin_v = 50
+
+            scaled_margin = int(margin_v * (preview_h / orig_h))
+
+            # Get text bounding box
+            bbox = draw.textbbox((0, 0), sample_text, font=font)
+            text_w = bbox[2] - bbox[0]
+            text_h = bbox[3] - bbox[1]
+
+            x = (preview_w - text_w) // 2
+            y = preview_h - scaled_margin - text_h
+
+            # Draw text with outline
+            outline_color = "#000000"
+            for dx in [-2, -1, 0, 1, 2]:
+                for dy in [-2, -1, 0, 1, 2]:
+                    draw.text((x + dx, y + dy), sample_text, font=font, fill=outline_color)
+
+            draw.text((x, y), sample_text, font=font, fill=self.sub_color)
+
+            # Draw margin indicator line
+            draw.line([(0, preview_h - scaled_margin), (preview_w, preview_h - scaled_margin)],
+                      fill="#FF0000", width=1)
+            draw.text((5, preview_h - scaled_margin - 15), f"Margin V: {margin_v}",
+                      font=ImageFont.load_default(), fill="#FF0000")
+
+            # Convert to PhotoImage
+            photo = ImageTk.PhotoImage(img)
+
+            # Create canvas
+            self.preview_canvas = ctk.CTkLabel(self.preview_frame, image=photo, text="")
+            self.preview_canvas.image = photo
+            self.preview_canvas.pack(pady=5)
+
+            # Cleanup temp file
+            os.remove(tmp_path)
+
+        except Exception as e:
+            print(f"Preview error: {e}")
+            if self.preview_canvas:
+                self.preview_canvas.destroy()
+            self.preview_canvas = ctk.CTkLabel(self.preview_frame, text=f"Preview error: {e}", text_color="red")
+            self.preview_canvas.pack(pady=10)
+
+    def start_translation(self):
+        # Validate inputs
+        api_key = self.api_key_entry.get().strip()
+        if not api_key:
+            messagebox.showerror("Error", "Please enter a Gemini API Key.")
+            return
+
+        if not self.source_video:
+            messagebox.showerror("Error", "Please select a source video.")
+            return
+
+        # Save all settings for next time
+        self.config["translate_api_key"] = api_key
+        self.save_settings()
+
+        self.translate_btn.configure(state="disabled", text="Translating...")
+
+        def process():
+            try:
+                mode = self.mode_var.get()
+                target_lang_name = self.target_lang_var.get()
+                target_lang_code = SUPPORTED_LANGUAGES.get(target_lang_name, "en")
+
+                font_settings = {
+                    'Fontname': 'Arial',
+                    'Fontsize': self.font_size_entry.get(),
+                    'PrimaryColour': self.sub_color
+                }
+
+                # Get subtitle mode
+                sub_mode = self.sub_mode_var.get()
+
+                try:
+                    margin_v = int(self.margin_entry.get())
+                except:
+                    margin_v = 50
+
+                # Determine output path
+                base_name = os.path.splitext(os.path.basename(self.source_video))[0]
+                suffix = "subtitled" if mode == "subtitle" else "dubbed"
+                output_filename = f"{base_name}_{suffix}_{target_lang_code}.mp4"
+
+                if self.output_folder:
+                    output_video_path = os.path.join(self.output_folder, output_filename)
+                else:
+                    output_video_path = os.path.join(os.path.dirname(self.source_video), output_filename)
+
+                self.log(f"Starting {mode} translation to {target_lang_name}...")
+                self.log(f"Output: {output_video_path}")
+
+                if mode == "subtitle":
+                    result = translate_video(
+                        self.source_video,
+                        target_lang_code,
+                        api_key,
+                        mode="subtitle",
+                        output_video_path=output_video_path,
+                        font_settings=font_settings,
+                        margin_v=margin_v,
+                        sub_mode=sub_mode,
+                        logger=self.log
+                    )
+                else:
+                    speech_speed = SPEECH_SPEEDS.get(self.speed_var.get(), 1.0)
+                    result = translate_video(
+                        self.source_video,
+                        target_lang_code,
+                        api_key,
+                        mode="dubbing",
+                        output_video_path=output_video_path,
+                        voice=self.voice_var.get(),
+                        speech_speed=speech_speed,
+                        add_subtitles=self.add_subs_var.get(),
+                        font_settings=font_settings,
+                        margin_v=margin_v,
+                        sub_mode=sub_mode,
+                        logger=self.log
+                    )
+
+                if result:
+                    self.log(f"Translation completed: {result}")
+                    self.after(0, lambda: messagebox.showinfo("Success", f"Video translated successfully!\n\n{result}"))
+                else:
+                    self.log("Translation failed")
+                    self.after(0, lambda: messagebox.showerror("Error", "Translation failed. Check logs for details."))
+
+            except Exception as e:
+                self.log(f"Error: {e}")
+                self.after(0, lambda: messagebox.showerror("Error", f"Translation failed: {e}"))
+            finally:
+                self.after(0, lambda: self.translate_btn.configure(state="normal", text="Start Translation"))
+
+        thread = threading.Thread(target=process)
+        thread.start()
 
 
 class NewsAnchorGeneratorWindow(ctk.CTkToplevel):
     """Window for generating AI News Anchor videos using Veo 3.0 Fast with auto-extend support."""
     
     # Approximate characters per video segment (~10 seconds of speech)
-    CHARS_PER_SEGMENT = 180  # Characters per segment
+    CHARS_PER_SEGMENT = 200  # Characters per segment
     
     # Veo pricing (approximate)
     VEO_COST_PER_VIDEO = 0.35  # USD per 8-second video
@@ -1652,35 +2185,65 @@ class NewsAnchorGeneratorWindow(ctk.CTkToplevel):
         
         self.create_ui()
     
-    def split_script(self, script):
-        """Split script into segments for video generation."""
+    def split_script(self, script, chars_per_segment=None):
+        """Split script into segments for video generation.
+
+        Uses dynamic splitting: if result would be 2 segments,
+        re-splits to get 3 segments for better video/audio sync.
+        """
         script = script.strip()
         if not script:
             return []
-        
+
+        if chars_per_segment is None:
+            chars_per_segment = self.CHARS_PER_SEGMENT
+
         # Split by sentences (periods, question marks, exclamation marks)
         import re
         sentences = re.split(r'(?<=[.!?])\s+', script)
-        
+
+        # Filter empty sentences
+        sentences = [s.strip() for s in sentences if s.strip()]
+
+        if not sentences:
+            return [script]
+
         segments = []
         current_segment = ""
-        
+
         for sentence in sentences:
-            if len(current_segment) + len(sentence) <= self.CHARS_PER_SEGMENT:
+            # If sentence itself is longer than limit, add it as its own segment
+            if len(sentence) > chars_per_segment:
+                if current_segment.strip():
+                    segments.append(current_segment.strip())
+                segments.append(sentence)
+                current_segment = ""
+            elif len(current_segment) + len(sentence) + 1 <= chars_per_segment:
                 current_segment += sentence + " "
             else:
                 if current_segment.strip():
                     segments.append(current_segment.strip())
                 current_segment = sentence + " "
-        
-        # Add remaining
+
+        # Add remaining segment
         if current_segment.strip():
             segments.append(current_segment.strip())
-        
-        # If no segments, put whole script as one
-        if not segments:
-            segments = [script]
-        
+
+        # Dynamic adjustment: if only 2 segments, re-split to get more
+        # This helps prevent video ending before speech finishes
+        if len(segments) == 2 and chars_per_segment == self.CHARS_PER_SEGMENT:
+            # Calculate new chars_per_segment to get ~3 segments
+            total_chars = len(script)
+            new_chars_per_segment = total_chars // 3
+            print(f"[Split] Dynamic adjustment: 2 segments -> re-splitting with {new_chars_per_segment} chars/segment")
+            return self.split_script(script, chars_per_segment=new_chars_per_segment)
+
+        # Log segment info
+        print(f"[Split] Total sentences: {len(sentences)}")
+        print(f"[Split] Total segments: {len(segments)} (chars_per_segment={chars_per_segment})")
+        for i, seg in enumerate(segments):
+            print(f"[Split] Segment {i+1}: {len(seg)} chars - {seg[:50]}...")
+
         return segments
     
     def update_segment_info(self, event=None):
@@ -2309,30 +2872,42 @@ class NewsAnchorGeneratorWindow(ctk.CTkToplevel):
             if self.overlay_media_list:
                 self.after(0, lambda: self.update_status("กำลังแทรก Media..."))
                 current_video = final_video
-                
-                # Insert overlays starting at 5 seconds, spaced by overlay duration + 2s gap
+
+                # Insert ALL overlays in ONE pass using overlay filter (not concat)
                 base_start_time = 5.0
-                overlay_duration = 6.5
-                gap_between = 2.0
-                
+                overlay_duration = 3.0  # Duration for each overlay (seconds)
+
+                total_overlays = len(self.overlay_media_list)
+                self.after(0, lambda n=total_overlays: self.log(f"📎 Inserting {n} media files starting at {base_start_time}s..."))
+
+                # Build overlay schedule
+                overlay_schedule = []
                 for i, overlay_path in enumerate(self.overlay_media_list):
-                    start_time = base_start_time + (i * (overlay_duration + gap_between))
-                    overlay_output = current_video.replace(".mp4", f"_overlay{i}.mp4")
-                    
-                    overlay_result = insert_overlay_with_fade(
-                        video_path=current_video,
-                        overlay_path=overlay_path,
-                        output_path=overlay_output,
-                        start_time=start_time,
-                        duration=overlay_duration,
-                        fade_duration=0.5,
-                        logger=lambda msg: self.after(0, lambda m=msg: self.log(m))
-                    )
-                    if overlay_result:
-                        current_video = overlay_result
-                        self.after(0, lambda idx=i+1, st=start_time: self.log(f"✅ Overlay {idx} inserted at {st:.1f}s"))
-                
-                final_video = current_video
+                    start_time = base_start_time + (i * overlay_duration)
+                    overlay_schedule.append({
+                        'path': overlay_path,
+                        'start': start_time,
+                        'duration': overlay_duration
+                    })
+                    end_time = start_time + overlay_duration
+                    self.after(0, lambda idx=i+1, st=start_time, et=end_time, t=total_overlays:
+                        self.log(f"📌 Overlay {idx}/{t}: {st:.1f}s - {et:.1f}s"))
+
+                # Insert all overlays at once
+                overlay_output = current_video.replace(".mp4", "_with_overlays.mp4")
+                overlay_result = insert_multiple_overlays(
+                    video_path=current_video,
+                    overlay_schedule=overlay_schedule,
+                    output_path=overlay_output,
+                    fade_duration=0.3,
+                    logger=lambda msg: self.after(0, lambda m=msg: self.log(m))
+                )
+
+                if overlay_result:
+                    final_video = overlay_result
+                    self.after(0, lambda n=total_overlays: self.log(f"✅ All {n} overlays inserted successfully"))
+                else:
+                    self.after(0, lambda: self.log("⚠️ Failed to insert overlays, using original video"))
             
             # Apply subtitles LAST (so they appear on top of overlays)
             if self.subtitle_enabled_var.get():

@@ -1,5 +1,5 @@
 {
-    "api_key": "AIzaSyAn_RE4hIDwTROguqDFxO0dGbgCwr0mHfc",
+    "api_key": "AIzaSyAz_VseWYvPzOD-2O-buqCdSm60cDc2kVo",
     "font_name": "Tahoma",
     "font_size": "25",
     "font_color": "#ffec00",
@@ -20,5 +20,10 @@
         "x": 837,
         "y": 1650
     },
-    "logo_scale": 0.3
+    "logo_scale": 0.3,
+    "translate_api_key": "AIzaSyBLmxqn7k3fW_otXVkAjxJVQETu5vadOhs",
+    "translate_sub_mode": "word",
+    "translate_font_size": "25",
+    "translate_margin_v": "50",
+    "translate_sub_color": "#FFFFFF"
 }

@@ -739,6 +739,112 @@ def concatenate_videos(video_paths, output_path, logger=None):
         return None
 
 
+def insert_multiple_overlays(video_path, overlay_schedule, output_path, fade_duration=0.3, logger=None):
+    """
+    Insert multiple overlay images/videos into the main video in ONE pass.
+    Uses overlay filter to place media on top of video at specified times.
+
+    Args:
+        video_path: Path to the main video
+        overlay_schedule: List of dicts with 'path', 'start', 'duration' keys
+        output_path: Path to save the output video
+        fade_duration: Duration of fade in/out effect (in seconds)
+        logger: Optional logger function
+
+    Returns:
+        output_path on success, None on failure
+    """
+    import subprocess
+
+    def log(msg):
+        if logger:
+            logger(msg)
+        print(msg)
+
+    if not overlay_schedule:
+        return video_path
+
+    try:
+        # Get main video dimensions
+        probe = ffmpeg.probe(video_path)
+        video_stream = next(s for s in probe['streams'] if s['codec_type'] == 'video')
+        width = int(video_stream['width'])
+        height = int(video_stream['height'])
+
+        log(f"Video dimensions: {width}x{height}")
+        log(f"Processing {len(overlay_schedule)} overlays...")
+
+        # Build FFmpeg command with all inputs and complex filter
+        cmd = ['ffmpeg', '-y', '-i', video_path]
+
+        # Add all overlay inputs
+        for i, item in enumerate(overlay_schedule):
+            overlay_path = item['path']
+            ext = os.path.splitext(overlay_path)[1].lower()
+            is_image = ext in ['.jpg', '.jpeg', '.png', '.webp', '.gif']
+
+            if is_image:
+                cmd.extend(['-loop', '1', '-t', str(item['duration']), '-i', overlay_path])
+            else:
+                cmd.extend(['-i', overlay_path])
+
+        # Build complex filter graph
+        filter_parts = []
+        current_stream = "[0:v]"
+
+        for i, item in enumerate(overlay_schedule):
+            start = item['start']
+            duration = item['duration']
+            end = start + duration
+            input_idx = i + 1
+
+            overlay_path = item['path']
+            ext = os.path.splitext(overlay_path)[1].lower()
+            is_image = ext in ['.jpg', '.jpeg', '.png', '.webp', '.gif']
+
+            # Scale and center overlay on black background
+            scale_filter = f"[{input_idx}:v]scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black"
+
+            if not is_image:
+                scale_filter += f",trim=0:{duration},setpts=PTS-STARTPTS"
+
+            # Add fade in/out
+            scale_filter += f",fade=t=in:st=0:d={fade_duration},fade=t=out:st={duration-fade_duration}:d={fade_duration}"
+            scale_filter += f"[ovr{i}]"
+            filter_parts.append(scale_filter)
+
+            # Apply overlay with enable filter for timing
+            overlay_filter = f"{current_stream}[ovr{i}]overlay=0:0:enable='between(t,{start},{end})'[out{i}]"
+            filter_parts.append(overlay_filter)
+            current_stream = f"[out{i}]"
+
+        # Combine all filter parts
+        filter_complex = ";".join(filter_parts)
+
+        cmd.extend([
+            '-filter_complex', filter_complex,
+            '-map', current_stream,
+            '-map', '0:a?',
+            '-c:v', 'libx264', '-preset', 'fast',
+            '-c:a', 'aac',
+            output_path
+        ])
+
+        log(f"Running FFmpeg with {len(overlay_schedule)} overlays...")
+        result = subprocess.run(cmd, capture_output=True, text=True)
+
+        if result.returncode != 0:
+            log(f"FFmpeg error: {result.stderr[:500]}")
+            return None
+
+        log(f"All overlays inserted successfully")
+        return output_path
+
+    except Exception as e:
+        log(f"Error inserting overlays: {e}")
+        return None
+
+
 def insert_overlay_with_fade(video_path, overlay_path, output_path, start_time=2.0, duration=3.0, fade_duration=0.5, logger=None):
     """
     Insert an overlay image or video into the main video with fade in/out transitions.

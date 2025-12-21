@@ -57,14 +57,14 @@ def generate_news_anchor_prompt(script, language_code="en"):
     # Use only first 100 characters as context
     script_preview = script[:100] if script else ""
     
-    # Create a professional news anchor prompt with VERY FAST speaking
-    prompt = f"""A professional {lang_name}-speaking news anchor delivering URGENT breaking news at VERY HIGH SPEED in a modern TV studio.
-The anchor speaks EXTREMELY FAST in rapid-fire delivery style, rushing through words with no pauses.
-SERIOUS stern facial expression, intense focused eyes, no smiling. Professional journalism demeanor.
-Speaking at 220 words per minute. Nonstop continuous speech filling every second. No silence gaps.
-They rapidly say: "{script_preview}"
-URGENT breaking news energy. Rapid-fire speech delivery. No breath pauses.
-Modern news studio with blue graphics. Broadcast quality."""
+    # Create a professional news anchor prompt with EXTREME SPEED speaking
+    prompt = f"""A {lang_name}-speaking news anchor SPEED-READING breaking news in TV studio.
+TRIPLE SPEED talking. 400 words per minute. Fastest human speech possible.
+Mouth moves EXTREMELY FAST like fast-forwarded video. Auctioneer-style rapid-fire delivery.
+NO PAUSES. NO BREAKS. Continuous machine-gun speech. Racing through words nonstop.
+Intense urgent expression. They speed-read: "{script_preview}"
+Time-critical emergency broadcast. Hyper-accelerated speech throughout entire video.
+Modern studio, blue graphics."""
     
     return prompt
 

@@ -1,0 +1,9 @@
+{
+    "claudeCode.environmentVariables": [
+        {
+            "name": "ANTHROPIC_API_KEY",
+            "value": "YOUR_API_KEY_HERE"
+        }
+    ],
+    "claudeCode.allowDangerouslySkipPermissions": true
+}
