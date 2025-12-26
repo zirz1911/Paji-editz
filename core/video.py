@@ -78,7 +78,8 @@ def merge_audio_video(video_path, audio_path, output_path, mode="trim", music_pa
                     '-map', '0:v',
                     '-map', '1:a',
                     '-c:v', 'libx264',  # Need to re-encode when looping
-                    '-preset', 'fast',
+                    '-preset', 'medium',
+                    '-crf', '18',
                     '-c:a', 'aac',
                     output_path
                 ]
@@ -118,8 +119,10 @@ def create_image_video(image_path, output_path, duration=5.0, fps=30, width=1080
             '-t', str(duration),
             '-framerate', str(fps),
             '-i', image_path,
-            '-vf', f'scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p',
+            '-vf', f'scale={width}:{height}:flags=lanczos:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,unsharp=5:5:1.0:5:5:0.0,format=yuv420p',
             '-c:v', 'libx264',
+            '-preset', 'medium',
+            '-crf', '18',
             '-pix_fmt', 'yuv420p',
             '-r', str(fps),
             '-an',  # No audio
@@ -481,8 +484,10 @@ def create_slideshow_video(image_folder, audio_duration, output_path, transition
                         '-t', str(display_time),
                         '-framerate', str(fps),
                         '-i', media['path'],
-                        '-vf', f'scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=decrease,pad={WIDTH}:{HEIGHT}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p',
+                        '-vf', f'scale={WIDTH}:{HEIGHT}:flags=lanczos:force_original_aspect_ratio=decrease,pad={WIDTH}:{HEIGHT}:(ow-iw)/2:(oh-ih)/2,setsar=1,unsharp=5:5:1.0:5:5:0.0,format=yuv420p',
                         '-c:v', 'libx264',
+                        '-preset', 'medium',
+                        '-crf', '18',
                         '-pix_fmt', 'yuv420p',
                         '-r', str(fps),
                         '-an',
@@ -494,8 +499,10 @@ def create_slideshow_video(image_folder, audio_duration, output_path, transition
                         'ffmpeg', '-y',
                         '-i', media['path'],
                         '-t', str(display_time),
-                        '-vf', f'scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=decrease,pad={WIDTH}:{HEIGHT}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p,fps={fps}',
+                        '-vf', f'scale={WIDTH}:{HEIGHT}:flags=lanczos:force_original_aspect_ratio=decrease,pad={WIDTH}:{HEIGHT}:(ow-iw)/2:(oh-ih)/2,setsar=1,unsharp=5:5:1.0:5:5:0.0,format=yuv420p,fps={fps}',
                         '-c:v', 'libx264',
+                        '-preset', 'medium',
+                        '-crf', '18',
                         '-pix_fmt', 'yuv420p',
                         '-r', str(fps),
                         '-an',
@@ -544,6 +551,8 @@ def create_slideshow_video(image_folder, audio_duration, output_path, transition
                     '-filter_complex', filter_complex,
                     '-map', '[vfinal]',
                     '-c:v', 'libx264',
+                    '-preset', 'medium',
+                    '-crf', '18',
                     '-pix_fmt', 'yuv420p',
                     '-r', str(fps),
                     output_path
@@ -615,8 +624,8 @@ def overlay_logo(video_path, logo_path, output_path, position=None, logo_scale=0
         input_video = ffmpeg.input(video_path)
         input_logo = ffmpeg.input(logo_path)
         
-        # Scale logo and overlay
-        logo_scaled = input_logo.filter('scale', logo_width, -1)
+        # Scale logo with high-quality Lanczos algorithm and sharpening
+        logo_scaled = input_logo.filter('scale', logo_width, -1, flags='lanczos').filter('unsharp', 5, 5, 1.0, 5, 5, 0.0)
         
         # Overlay logo on video
         output = ffmpeg.overlay(input_video, logo_scaled, x=x, y=y)
@@ -624,7 +633,7 @@ def overlay_logo(video_path, logo_path, output_path, position=None, logo_scale=0
         # Output with audio
         (
             ffmpeg
-            .output(output, input_video.audio, output_path, vcodec='libx264', acodec='copy')
+            .output(output, input_video.audio, output_path, vcodec='libx264', preset='medium', crf='18', acodec='copy')
             .overwrite_output()
             .run(capture_stdout=True, capture_stderr=True)
         )
@@ -716,6 +725,8 @@ def concatenate_videos(video_paths, output_path, logger=None):
                 '-safe', '0',
                 '-i', list_file,
                 '-c:v', 'libx264',
+                '-preset', 'medium',
+                '-crf', '18',
                 '-c:a', 'aac',
                 output_path
             ]
@@ -739,16 +750,23 @@ def concatenate_videos(video_paths, output_path, logger=None):
         return None
 
 
-def insert_multiple_overlays(video_path, overlay_schedule, output_path, fade_duration=0.3, logger=None):
+def insert_multiple_overlays(video_path, overlay_schedule, output_path, fade_duration=0.0, logger=None):
     """
     Insert multiple overlay images/videos into the main video in ONE pass.
     Uses overlay filter to place media on top of video at specified times.
 
+    CENTERED with black bars (letterbox) - images/videos appear at FULL BRIGHTNESS.
+    Video overlays will NOT include audio (only main video audio is kept).
+
     Args:
         video_path: Path to the main video
         overlay_schedule: List of dicts with 'path', 'start', 'duration' keys
+                         Example: [{'path': 'img.jpg', 'start': 2.0, 'duration': 5.0}]
+                         - 'path': Path to image or video file
+                         - 'start': When to show overlay (seconds from start)
+                         - 'duration': How long to show overlay (seconds) - YOU CAN CUSTOMIZE THIS!
         output_path: Path to save the output video
-        fade_duration: Duration of fade in/out effect (in seconds)
+        fade_duration: Duration of fade in/out effect (0 = no fade, instant appear/disappear)
         logger: Optional logger function
 
     Returns:
@@ -777,7 +795,7 @@ def insert_multiple_overlays(video_path, overlay_schedule, output_path, fade_dur
         # Build FFmpeg command with all inputs and complex filter
         cmd = ['ffmpeg', '-y', '-i', video_path]
 
-        # Add all overlay inputs
+        # Add all overlay inputs (video audio will be ignored - only video streams used)
         for i, item in enumerate(overlay_schedule):
             overlay_path = item['path']
             ext = os.path.splitext(overlay_path)[1].lower()
@@ -786,6 +804,7 @@ def insert_multiple_overlays(video_path, overlay_schedule, output_path, fade_dur
             if is_image:
                 cmd.extend(['-loop', '1', '-t', str(item['duration']), '-i', overlay_path])
             else:
+                # Video input (only :v stream will be used in filter, audio ignored)
                 cmd.extend(['-i', overlay_path])
 
         # Build complex filter graph
@@ -802,19 +821,18 @@ def insert_multiple_overlays(video_path, overlay_schedule, output_path, fade_dur
             ext = os.path.splitext(overlay_path)[1].lower()
             is_image = ext in ['.jpg', '.jpeg', '.png', '.webp', '.gif']
 
-            # Scale and center overlay on black background
-            scale_filter = f"[{input_idx}:v]scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black"
+            # Scale and center overlay - HIGH QUALITY + FULL BRIGHTNESS (NO FADE!)
+            scale_filter = f"[{input_idx}:v]scale={width}:{height}:flags=lanczos:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,unsharp=5:5:1.0:5:5:0.0,format=yuva420p"
 
             if not is_image:
                 scale_filter += f",trim=0:{duration},setpts=PTS-STARTPTS"
 
-            # Add fade in/out
-            scale_filter += f",fade=t=in:st=0:d={fade_duration},fade=t=out:st={duration-fade_duration}:d={fade_duration}"
+            # NO FADE - ภาพโผล่มาเต็มๆ เลย ไม่จาง!
             scale_filter += f"[ovr{i}]"
             filter_parts.append(scale_filter)
 
-            # Apply overlay with enable filter for timing
-            overlay_filter = f"{current_stream}[ovr{i}]overlay=0:0:enable='between(t,{start},{end})'[out{i}]"
+            # Overlay using shortest=1 ensures proper alpha compositing
+            overlay_filter = f"{current_stream}[ovr{i}]overlay=0:0:format=auto:enable='between(t,{start},{end})'[out{i}]"
             filter_parts.append(overlay_filter)
             current_stream = f"[out{i}]"
 
@@ -825,7 +843,7 @@ def insert_multiple_overlays(video_path, overlay_schedule, output_path, fade_dur
             '-filter_complex', filter_complex,
             '-map', current_stream,
             '-map', '0:a?',
-            '-c:v', 'libx264', '-preset', 'fast',
+            '-c:v', 'libx264', '-preset', 'medium', '-crf', '18',
             '-c:a', 'aac',
             output_path
         ])
@@ -848,16 +866,19 @@ def insert_multiple_overlays(video_path, overlay_schedule, output_path, fade_dur
 def insert_overlay_with_fade(video_path, overlay_path, output_path, start_time=2.0, duration=3.0, fade_duration=0.5, logger=None):
     """
     Insert an overlay image or video into the main video with fade in/out transitions.
-    
+
+    CENTERED with black bars (letterbox) - replaces main video during insert time.
+    Video overlays will NOT include audio (only main video audio is kept).
+
     Args:
         video_path: Path to the main video
         overlay_path: Path to the overlay image or video
         output_path: Path to save the output video
-        start_time: When to start showing the overlay (in seconds)
-        duration: How long to show the overlay (in seconds)
-        fade_duration: Duration of fade in/out effect (in seconds)
+        start_time: When to start showing the overlay (seconds) - YOU CAN CUSTOMIZE!
+        duration: How long to show the overlay (seconds) - YOU CAN CUSTOMIZE!
+        fade_duration: Duration of fade in/out effect (seconds, 0 = no fade)
         logger: Optional logger function
-    
+
     Returns:
         output_path on success, None on failure
     """
@@ -890,15 +911,15 @@ def insert_overlay_with_fade(video_path, overlay_path, output_path, start_time=2
                 '-i', video_path,
                 '-loop', '1', '-t', str(duration), '-i', overlay_path,
                 '-filter_complex',
-                f"[1:v]scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black,"
-                f"fade=t=in:st=0:d={fade_duration},fade=t=out:st={duration-fade_duration}:d={fade_duration}[insert];"
+                f"[1:v]scale={width}:{height}:flags=lanczos:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black,"
+                f"unsharp=5:5:1.0:5:5:0.0,fade=t=in:st=0:d={fade_duration},fade=t=out:st={duration-fade_duration}:d={fade_duration}[insert];"
                 f"[0:v]split[main1][main2];"
                 f"[main1]trim=0:{start_time},setpts=PTS-STARTPTS[before];"
                 f"[insert]setpts=PTS-STARTPTS[middle];"
                 f"[main2]trim={start_time+duration},setpts=PTS-STARTPTS[after];"
                 f"[before][middle][after]concat=n=3:v=1:a=0[outv]",
                 '-map', '[outv]', '-map', '0:a?',
-                '-c:v', 'libx264', '-c:a', 'aac',
+                '-c:v', 'libx264', '-preset', 'medium', '-crf', '18', '-c:a', 'aac',
                 output_path
             ]
         else:
@@ -908,15 +929,15 @@ def insert_overlay_with_fade(video_path, overlay_path, output_path, start_time=2
                 '-i', video_path,
                 '-i', overlay_path,
                 '-filter_complex',
-                f"[1:v]scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black,"
-                f"trim=0:{duration},setpts=PTS-STARTPTS,"
+                f"[1:v]scale={width}:{height}:flags=lanczos:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black,"
+                f"unsharp=5:5:1.0:5:5:0.0,trim=0:{duration},setpts=PTS-STARTPTS,"
                 f"fade=t=in:st=0:d={fade_duration},fade=t=out:st={duration-fade_duration}:d={fade_duration}[insert];"
                 f"[0:v]split[main1][main2];"
                 f"[main1]trim=0:{start_time},setpts=PTS-STARTPTS[before];"
                 f"[main2]trim={start_time+duration},setpts=PTS-STARTPTS[after];"
                 f"[before][insert][after]concat=n=3:v=1:a=0[outv]",
                 '-map', '[outv]', '-map', '0:a?',
-                '-c:v', 'libx264', '-c:a', 'aac',
+                '-c:v', 'libx264', '-preset', 'medium', '-crf', '18', '-c:a', 'aac',
                 output_path
             ]
         

@@ -2168,7 +2168,7 @@ class NewsAnchorGeneratorWindow(ctk.CTkToplevel):
         self.geometry("1050x950")
         self.minsize(1000, 900)
         
-        self.grid_columnconfigure(0, weight=1)
+        self.grid_columnconfigure(0, weight=0, minsize=320)
         self.grid_rowconfigure(1, weight=1)
         
         self.is_generating = False
@@ -2178,10 +2178,12 @@ class NewsAnchorGeneratorWindow(ctk.CTkToplevel):
         self.last_aspect_ratio = None
         self.script_segments = []
         self.current_segment_index = 0
-        self.overlay_media_list = []  # List of overlay images/videos
+        self.overlay_media_list = []
         self.total_cost = 0.0
-        self.last_api_call = 0  # Timestamp of last API call
-        self.API_DELAY_SECONDS = 35  # Wait 35 seconds between calls (2 per minute limit)
+        self.last_api_call = 0
+        self.API_DELAY_SECONDS = 35
+        
+        self.script_input_widgets = [] # List of textboxes
         
         self.create_ui()
     
@@ -2247,18 +2249,18 @@ class NewsAnchorGeneratorWindow(ctk.CTkToplevel):
         return segments
     
     def update_segment_info(self, event=None):
-        """Update the segment count display when script changes."""
-        script = self.script_textbox.get("1.0", "end-1c").strip()
-        if script:
-            segments = self.split_script(script)
-            estimated_cost = len(segments) * self.VEO_COST_PER_VIDEO
-            self.segment_count_label.configure(
-                text=f"📊 แบ่งเป็น {len(segments)} ส่วน (~{len(segments) * 8} วินาที) | 💰 ประมาณ ${estimated_cost:.2f} USD"
-            )
-            self.script_segments = segments
-        else:
-            self.segment_count_label.configure(text="📊 กรุณากรอก Script")
-            self.script_segments = []
+        """Update segment info from manual inputs."""
+        count = len(self.script_input_widgets)
+        
+        # Calculate approximate duration based on text length of all segments
+        total_chars = 0
+        for tb in self.script_input_widgets:
+            total_chars += len(tb.get("1.0", "end-1c").strip())
+            
+        estimated_cost = count * self.VEO_COST_PER_VIDEO
+        self.segment_count_label.configure(
+            text=f"📊 {count} Segments (~{total_chars//20} sec) | 💰 ~$ {estimated_cost:.2f}"
+        )
     
     def create_ui(self):
         # Header
@@ -2423,18 +2425,26 @@ class NewsAnchorGeneratorWindow(ctk.CTkToplevel):
         right_frame.grid_rowconfigure(1, weight=2)  # Script area
         right_frame.grid_rowconfigure(3, weight=1)  # Log area
         
-        # Script Section
-        ctk.CTkLabel(right_frame, text="📝 Script", font=ctk.CTkFont(size=14, weight="bold")).grid(row=0, column=0, pady=(10, 5))
+        # Script Section (Dynamic)
+        script_header = ctk.CTkFrame(right_frame, fg_color="transparent")
+        script_header.grid(row=0, column=0, sticky="ew", pady=(10, 5))
         
-        self.script_textbox = ctk.CTkTextbox(right_frame)
-        self.script_textbox.grid(row=1, column=0, padx=10, pady=5, sticky="nsew")
-        self.script_textbox.bind("<KeyRelease>", self.update_segment_info)
+        ctk.CTkLabel(script_header, text="📝 Script Segments", font=ctk.CTkFont(size=14, weight="bold")).pack(side="left")
         
-        # Segment Info + Cost
+        # Add/Remove buttons
+        ctk.CTkButton(script_header, text="+ Add", width=60, command=self.add_script_segment, fg_color="#2196F3").pack(side="right", padx=2)
+        ctk.CTkButton(script_header, text="- Remove", width=60, command=self.remove_last_segment, fg_color="#F44336").pack(side="right", padx=2)
+        
+        
+        # Scrollable container for script segments
+        self.scripts_scroll = ctk.CTkScrollableFrame(right_frame, height=300)
+        self.scripts_scroll.grid(row=1, column=0, padx=10, pady=5, sticky="nsew")
+        
+        # Segment Info + Cost (must be created before add_script_segment)
         self.segment_count_label = ctk.CTkLabel(right_frame, text="📊 Enter script to see segment info", font=ctk.CTkFont(size=10))
         self.segment_count_label.grid(row=2, column=0, pady=3)
         
-        # Log Section
+        # Log Section (must be created before add_script_segment for logging)
         log_header = ctk.CTkFrame(right_frame, fg_color="transparent")
         log_header.grid(row=3, column=0, sticky="ew", padx=10)
         ctk.CTkLabel(log_header, text="📋 Log", font=ctk.CTkFont(size=12, weight="bold")).pack(side="left")
@@ -2452,6 +2462,9 @@ class NewsAnchorGeneratorWindow(ctk.CTkToplevel):
         
         self.segment_progress_label = ctk.CTkLabel(right_frame, text="", font=ctk.CTkFont(size=10))
         self.segment_progress_label.grid(row=6, column=0, pady=2)
+        
+        # Init 1 segment (AFTER all dependent widgets are created)
+        self.add_script_segment()
         
         # ===================== BUTTONS (Bottom) =====================
         btn_frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -2497,16 +2510,29 @@ class NewsAnchorGeneratorWindow(ctk.CTkToplevel):
         self.ref_image_label.configure(text="ไม่ได้เลือก")
     
     def add_overlay_media(self):
-        """Add overlay image or video for insertion."""
+        """Add overlay image or video for insertion with timing."""
         paths = filedialog.askopenfilenames(
             title="Select Images/Videos to Insert",
             filetypes=[("Media Files", "*.jpg *.jpeg *.png *.webp *.mp4 *.mov *.avi")]
         )
         if paths:
             for path in paths:
-                self.overlay_media_list.append(path)
+                # Ask for start time and duration
+                dialog = OverlayTimingDialog(self, os.path.basename(path))
+                self.wait_window(dialog)
+
+                if dialog.result:
+                    start_time = dialog.result['start']
+                    duration = dialog.result['duration']
+                    self.overlay_media_list.append({
+                        'path': path,
+                        'start': start_time,
+                        'duration': duration
+                    })
+                    self.log(f"Added: {os.path.basename(path)} (start={start_time}s, duration={duration}s)")
+
             self.update_overlay_display()
-            self.log(f"Added {len(paths)} overlay media files")
+            self.log(f"Total overlay media: {len(self.overlay_media_list)}")
     
     def clear_overlay_media(self):
         """Clear all overlay media."""
@@ -2514,15 +2540,43 @@ class NewsAnchorGeneratorWindow(ctk.CTkToplevel):
         self.update_overlay_display()
     
     def update_overlay_display(self):
-        """Update the overlay listbox display."""
+        """Update the overlay listbox display with timing info."""
         self.overlay_listbox.configure(state="normal")
         self.overlay_listbox.delete("1.0", "end")
         if self.overlay_media_list:
-            for i, path in enumerate(self.overlay_media_list):
-                self.overlay_listbox.insert("end", f"{i+1}. {os.path.basename(path)}\n")
+            for i, item in enumerate(self.overlay_media_list):
+                filename = os.path.basename(item['path'])
+                start = item['start']
+                duration = item['duration']
+                self.overlay_listbox.insert("end", f"{i+1}. {filename} | {start}s → {duration}s\n")
         else:
             self.overlay_listbox.insert("end", "No media to insert")
         self.overlay_listbox.configure(state="disabled")
+
+    def add_script_segment(self):
+        """Add a new script input textbox."""
+        idx = len(self.script_input_widgets) + 1
+        
+        frame = ctk.CTkFrame(self.scripts_scroll, fg_color="transparent")
+        frame.pack(fill="x", pady=2)
+        
+        ctk.CTkLabel(frame, text=f"#{idx}", width=30).pack(side="left", anchor="n", pady=5)
+        
+        tb = ctk.CTkTextbox(frame, height=60)
+        tb.pack(side="left", fill="both", expand=True)
+        tb.bind("<KeyRelease>", self.update_segment_info)
+        
+        self.script_input_widgets.append(tb)
+        self.update_segment_info()
+
+    def remove_last_segment(self):
+        """Remove the last script segment."""
+        if len(self.script_input_widgets) > 1:
+            widget = self.script_input_widgets.pop()
+            # The widget is the textbox, its parent is the frame
+            parent = widget.master
+            parent.destroy()
+            self.update_segment_info()
     
     def get_api_keys_file(self):
         """Get path to API keys storage file."""
@@ -2707,9 +2761,15 @@ class NewsAnchorGeneratorWindow(ctk.CTkToplevel):
     
     def start_generation(self):
         """Start video generation (with auto-extend if enabled)."""
-        script = self.script_textbox.get("1.0", "end-1c").strip()
-        if not script:
-            messagebox.showerror("Error", "กรุณากรอก Script")
+        # Collect scripts
+        segments = []
+        for tb in self.script_input_widgets:
+            text = tb.get("1.0", "end-1c").strip()
+            if text:
+                segments.append(text)
+        
+        if not segments:
+            messagebox.showerror("Error", "กรุณากรอก Script อย่างน้อย 1 ส่วน")
             return
         
         output_folder = self.output_path_var.get().strip()
@@ -2734,8 +2794,9 @@ class NewsAnchorGeneratorWindow(ctk.CTkToplevel):
         
         os.makedirs(output_folder, exist_ok=True)
         
-        # Split script
-        self.script_segments = self.split_script(script)
+        
+        # Set manual segments
+        self.script_segments = segments
         self.current_segment_index = 0
         
         # Disable buttons
@@ -2873,33 +2934,28 @@ class NewsAnchorGeneratorWindow(ctk.CTkToplevel):
                 self.after(0, lambda: self.update_status("กำลังแทรก Media..."))
                 current_video = final_video
 
-                # Insert ALL overlays in ONE pass using overlay filter (not concat)
-                base_start_time = 5.0
-                overlay_duration = 3.0  # Duration for each overlay (seconds)
-
+                # Insert ALL overlays in ONE pass using user-defined timing
                 total_overlays = len(self.overlay_media_list)
-                self.after(0, lambda n=total_overlays: self.log(f"📎 Inserting {n} media files starting at {base_start_time}s..."))
+                self.after(0, lambda n=total_overlays: self.log(f"📎 Inserting {n} media files with custom timing..."))
 
-                # Build overlay schedule
+                # Build overlay schedule from user input (already has path, start, duration)
                 overlay_schedule = []
-                for i, overlay_path in enumerate(self.overlay_media_list):
-                    start_time = base_start_time + (i * overlay_duration)
-                    overlay_schedule.append({
-                        'path': overlay_path,
-                        'start': start_time,
-                        'duration': overlay_duration
-                    })
-                    end_time = start_time + overlay_duration
-                    self.after(0, lambda idx=i+1, st=start_time, et=end_time, t=total_overlays:
-                        self.log(f"📌 Overlay {idx}/{t}: {st:.1f}s - {et:.1f}s"))
+                for i, item in enumerate(self.overlay_media_list):
+                    overlay_schedule.append(item)  # Already has correct format!
+                    start_time = item['start']
+                    duration = item['duration']
+                    end_time = start_time + duration
+                    filename = os.path.basename(item['path'])
+                    self.after(0, lambda idx=i+1, fn=filename, st=start_time, et=end_time, t=total_overlays:
+                        self.log(f"📌 Overlay {idx}/{t}: {fn} | {st:.1f}s - {et:.1f}s"))
 
-                # Insert all overlays at once
+                # Insert all overlays at once (NO FADE - full brightness)
                 overlay_output = current_video.replace(".mp4", "_with_overlays.mp4")
                 overlay_result = insert_multiple_overlays(
                     video_path=current_video,
                     overlay_schedule=overlay_schedule,
                     output_path=overlay_output,
-                    fade_duration=0.3,
+                    fade_duration=0.0,  # No fade - instant appear/disappear
                     logger=lambda msg: self.after(0, lambda m=msg: self.log(m))
                 )
 
@@ -2970,9 +3026,12 @@ class NewsAnchorGeneratorWindow(ctk.CTkToplevel):
             messagebox.showerror("Error", "ไม่มีวิดีโอที่จะต่อ กรุณาสร้างวิดีโอก่อน")
             return
         
-        extension_script = self.script_textbox.get("1.0", "end-1c").strip()
-        if not extension_script:
-            messagebox.showerror("Error", "กรุณากรอก Script สำหรับต่อเนื้อหา")
+        # For manual extension, open dialog or use last text box?
+        # Let's add a new segment internally
+        dialog = ctk.CTkInputDialog(text="Enter Extension Script:", title="Manual Extension")
+        extension_script = dialog.get_input()
+
+        if not extension_script or not extension_script.strip():
             return
         
         self.generate_btn.configure(state="disabled")
@@ -3445,6 +3504,88 @@ class CoverGeneratorWindow(ctk.CTkToplevel):
             self.parent.after(0, lambda: messagebox.showerror("Error", f"Failed: {e}"))
         finally:
             self.parent.after(0, lambda: self.generate_btn.configure(state="normal", text="Generate All Covers"))
+
+
+class OverlayTimingDialog(ctk.CTkToplevel):
+    """Dialog to input start time and duration for overlay media."""
+    def __init__(self, parent, filename):
+        super().__init__(parent)
+        self.title("⏱️ Overlay Timing")
+        self.geometry("400x250")
+        self.resizable(False, False)
+
+        self.result = None
+
+        # Center the dialog
+        self.transient(parent)
+        self.grab_set()
+
+        # Header
+        header = ctk.CTkLabel(self, text=f"📎 {filename}", font=ctk.CTkFont(size=14, weight="bold"))
+        header.pack(pady=(20, 10))
+
+        desc = ctk.CTkLabel(self, text="Set timing for this media", font=ctk.CTkFont(size=11))
+        desc.pack(pady=(0, 20))
+
+        # Form frame
+        form = ctk.CTkFrame(self)
+        form.pack(padx=30, pady=10, fill="both", expand=True)
+
+        # Start time
+        start_row = ctk.CTkFrame(form, fg_color="transparent")
+        start_row.pack(pady=10, fill="x", padx=20)
+        ctk.CTkLabel(start_row, text="Start Time (seconds):", width=140, anchor="w").pack(side="left")
+        self.start_entry = ctk.CTkEntry(start_row, width=100)
+        self.start_entry.pack(side="left", padx=10)
+        self.start_entry.insert(0, "2.0")
+
+        # Duration
+        duration_row = ctk.CTkFrame(form, fg_color="transparent")
+        duration_row.pack(pady=10, fill="x", padx=20)
+        ctk.CTkLabel(duration_row, text="Duration (seconds):", width=140, anchor="w").pack(side="left")
+        self.duration_entry = ctk.CTkEntry(duration_row, width=100)
+        self.duration_entry.pack(side="left", padx=10)
+        self.duration_entry.insert(0, "5.0")
+
+        # Info
+        info = ctk.CTkLabel(form, text="💡 Tip: Videos will not include audio",
+                           font=ctk.CTkFont(size=10), text_color="gray")
+        info.pack(pady=10)
+
+        # Buttons
+        btn_frame = ctk.CTkFrame(self, fg_color="transparent")
+        btn_frame.pack(pady=15)
+
+        ctk.CTkButton(btn_frame, text="✓ OK", command=self.ok,
+                     fg_color="green", width=100).pack(side="left", padx=10)
+        ctk.CTkButton(btn_frame, text="✗ Cancel", command=self.cancel,
+                     fg_color="gray", width=100).pack(side="left", padx=10)
+
+        # Focus on start entry
+        self.start_entry.focus()
+
+        # Bind Enter key
+        self.bind("<Return>", lambda e: self.ok())
+        self.bind("<Escape>", lambda e: self.cancel())
+
+    def ok(self):
+        try:
+            start = float(self.start_entry.get())
+            duration = float(self.duration_entry.get())
+
+            if start < 0 or duration <= 0:
+                messagebox.showerror("Invalid Input", "Start must be ≥0 and duration must be >0")
+                return
+
+            self.result = {'start': start, 'duration': duration}
+            self.destroy()
+        except ValueError:
+            messagebox.showerror("Invalid Input", "Please enter valid numbers")
+
+    def cancel(self):
+        self.result = None
+        self.destroy()
+
 
 if __name__ == "__main__":
     ctk.set_appearance_mode("System")
